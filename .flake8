@@ -1,0 +1,24 @@
+[flake8]
+max-line-length = 120
+extend-ignore = E203,W503
+max-complexity = 8
+select = E,F,W,C90
+exclude =
+    .git,
+    __pycache__,
+    .mypy_cache,
+    .pytest_cache,
+    .venv,
+    .env,
+    build,
+    dist,
+    wheels,
+    .eggs,
+    eggs,
+    lib,
+    lib64,
+    var,
+    parts,
+    sdist,
+    uv.lock,
+    results

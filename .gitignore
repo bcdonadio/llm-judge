@@ -1,0 +1,59 @@
+# Environment files
+.env
+.venv
+.python-version
+
+# Editor settings
+.vscode/
+
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# Build artifacts
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# Packaging helpers
+.eggs/
+develop-eggs/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+pip-wheel-metadata/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.dmypy.json
+dmypy.json
+.hypothesis/
+
+# Tooling outputs
+uv.lock.bak
+
+# Runtime logs & temp files
+*.log
+*.tmp
+
+# Generated artifacts
+results/
+
+# OS-level clutter
+.DS_Store
+Thumbs.db
