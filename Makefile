@@ -1,28 +1,45 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook fmt-check-hook hooks
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
-GITLEAKS_HOOK ?= .git/hooks/pre-commit
+PRECOMMIT_HOOK ?= .git/hooks/pre-commit
 
-install: gitleaks-hook
+install: hooks
 	$(UV) sync --extra dev
 
+hooks: gitleaks-hook fmt-check-hook
+
 gitleaks-hook:
-	@mkdir -p $(dir $(GITLEAKS_HOOK))
-	@if [ ! -f $(GITLEAKS_HOOK) ]; then \
-		echo '#!/usr/bin/env bash' > $(GITLEAKS_HOOK); \
-		echo 'set -e' >> $(GITLEAKS_HOOK); \
+	@mkdir -p $(dir $(PRECOMMIT_HOOK))
+	@if [ ! -f $(PRECOMMIT_HOOK) ]; then \
+		echo '#!/usr/bin/env bash' > $(PRECOMMIT_HOOK); \
+		echo 'set -e' >> $(PRECOMMIT_HOOK); \
 	fi
-	@if ! grep -Fq '# gitleaks pre-commit hook' $(GITLEAKS_HOOK); then \
-		printf '\n# gitleaks pre-commit hook\n' >> $(GITLEAKS_HOOK); \
-		echo 'if command -v gitleaks >/dev/null 2>&1; then' >> $(GITLEAKS_HOOK); \
-		echo '  gitleaks protect --staged --no-banner --redact' >> $(GITLEAKS_HOOK); \
-		echo 'else' >> $(GITLEAKS_HOOK); \
-		echo '  echo "gitleaks not found; install it to run this hook."' >> $(GITLEAKS_HOOK); \
-		echo '  exit 1' >> $(GITLEAKS_HOOK); \
-		echo 'fi' >> $(GITLEAKS_HOOK); \
+	@if ! grep -Fq '# gitleaks pre-commit hook' $(PRECOMMIT_HOOK); then \
+		printf '\n# gitleaks pre-commit hook\n' >> $(PRECOMMIT_HOOK); \
+		echo 'if command -v gitleaks >/dev/null 2>&1; then' >> $(PRECOMMIT_HOOK); \
+		echo '  gitleaks protect --staged --no-banner --redact' >> $(PRECOMMIT_HOOK); \
+		echo 'else' >> $(PRECOMMIT_HOOK); \
+		echo '  echo "gitleaks not found; install it to run this hook."' >> $(PRECOMMIT_HOOK); \
+		echo '  exit 1' >> $(PRECOMMIT_HOOK); \
+		echo 'fi' >> $(PRECOMMIT_HOOK); \
 	fi
-	@chmod +x $(GITLEAKS_HOOK)
+	@chmod +x $(PRECOMMIT_HOOK)
+
+fmt-check-hook:
+	@mkdir -p $(dir $(PRECOMMIT_HOOK))
+	@if [ ! -f $(PRECOMMIT_HOOK) ]; then \
+		echo '#!/usr/bin/env bash' > $(PRECOMMIT_HOOK); \
+		echo 'set -e' >> $(PRECOMMIT_HOOK); \
+	fi
+	@if ! grep -Fq '# fmt-check pre-commit hook' $(PRECOMMIT_HOOK); then \
+		printf '\n# fmt-check pre-commit hook\n' >> $(PRECOMMIT_HOOK); \
+		echo 'if ! make fmt-check; then' >> $(PRECOMMIT_HOOK); \
+		echo '  echo "Formatting check failed. Run '\''make fmt'\'' to fix formatting."' >> $(PRECOMMIT_HOOK); \
+		echo '  exit 1' >> $(PRECOMMIT_HOOK); \
+		echo 'fi' >> $(PRECOMMIT_HOOK); \
+	fi
+	@chmod +x $(PRECOMMIT_HOOK)
 
 fmt:
 	$(UV_RUN) black .
