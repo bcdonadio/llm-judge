@@ -26,6 +26,6 @@ type-pyright:
 	$(UV_RUN) pyright
 
 test: type
-	$(UV_RUN) pytest
+	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing
 
 check: lint type test

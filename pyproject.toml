@@ -13,6 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-xdist>=3.5",
 ]
 dev = [
     "black>=23.12",
@@ -20,6 +22,8 @@ dev = [
     "mypy>=1.8",
     "pyright>=1.1",
     "pytest>=8.4.2",
+    "pytest-cov>=4.1",
+    "pytest-xdist>=3.5",
     "types-colorama",
     "types-PyYAML",
 ]
@@ -71,3 +75,13 @@ addopts = [
     "--strict-config",
     "--strict-markers",
 ]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+source = ["llm_judge"]
+concurrency = ["thread"]
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = true
