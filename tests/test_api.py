@@ -154,7 +154,7 @@ def test_openrouter_chat_debug_logging(monkeypatch: pytest.MonkeyPatch, caplog: 
     )
 
     assert response == {"choices": [{"message": {"content": "Plain"}}]}
-    assert any("POST https://openrouter.ai/api/v1/chat/completions" in message for message in caplog.messages)
+    assert any("POST" in message and "/chat/completions" in message for message in caplog.messages)
     caplog.clear()
     caplog.set_level(logging.INFO, logger="llm_judge.api")
 

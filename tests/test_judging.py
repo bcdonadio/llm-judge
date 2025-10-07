@@ -290,7 +290,10 @@ def test_judge_decide_logs_parse_failure(monkeypatch: pytest.MonkeyPatch, caplog
 
     assert result["ok"] is False
     assert "No JSON object found" in result["error"]
-    assert any("Unable to parse judge JSON" in message for message in caplog.messages)
+    assert any(
+        r.name == "llm_judge.judging" and "Unable to parse judge JSON" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_judge_config_helpers_validate_types(monkeypatch: pytest.MonkeyPatch) -> None:
