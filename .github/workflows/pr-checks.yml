@@ -1,0 +1,187 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Static Analysis and Tests
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: .venv
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: "linux-${{ runner.arch }}-py311"
+
+      - name: Cache virtual environment
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: uv-venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Check formatting
+        id: fmtr
+        run: make fmt-check
+
+      - name: Run linters
+        id: lint
+        run: make lint
+
+      - name: Run type checks
+        id: typecheck
+        run: make type
+
+      - name: Run tests
+        id: pytest
+        continue-on-error: true
+        run: |
+          uv run --extra dev pytest -n auto \
+            --cov=llm_judge \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --junitxml=pytest-results.xml
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-artifacts
+          retention-days: 7
+          path: |
+            pytest-results.xml
+            coverage.json
+
+      - name: Publish workflow summary
+        if: always()
+        env:
+          FORMAT_OUTCOME: ${{ steps.fmtr.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          TYPE_OUTCOME: ${{ steps.typecheck.outcome }}
+          TEST_OUTCOME: ${{ steps.pytest.outcome }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines: list[str] = []
+
+          lines.append("## Test Results")
+          junit_path = Path("pytest-results.xml")
+          if junit_path.exists():
+              tree = ET.parse(junit_path)
+              root = tree.getroot()
+              cases = root.findall(".//testcase")
+              if cases:
+                  lines.append("| Test | Result | Duration (s) |")
+                  lines.append("| --- | --- | --- |")
+                  for case in cases:
+                      classname = case.attrib.get("classname", "")
+                      name = case.attrib.get("name", "")
+                      full_name = f"{classname}::{name}" if classname else name
+                      full_name = full_name.replace("|", "\\|")
+                      time = float(case.attrib.get("time", 0.0))
+                      if case.find("failure") is not None:
+                          result = "❌ fail"
+                      elif case.find("error") is not None:
+                          result = "❌ error"
+                      elif case.find("skipped") is not None:
+                          result = "⚪ skipped"
+                      else:
+                          result = "✅ pass"
+                      lines.append(f"| {full_name} | {result} | {time:.2f} |")
+              else:
+                  lines.append("_No test cases were detected in the junit report._")
+          else:
+              lines.append("_pytest-results.xml not found; tests may not have run._")
+
+          lines.append("")
+          lines.append("## Coverage Report")
+          coverage_path = Path("coverage.json")
+          if coverage_path.exists():
+              with coverage_path.open("r", encoding="utf-8") as fh:
+                  coverage_data = json.load(fh)
+
+              def fmt_path(raw_path: str) -> str:
+                  path_obj = Path(raw_path)
+                  try:
+                      return str(path_obj.resolve().relative_to(Path.cwd()))
+                  except ValueError:
+                      return str(path_obj)
+
+              totals = coverage_data.get("totals", {})
+              files = coverage_data.get("files", {})
+
+              lines.append("| File | Statements | Missing | Coverage (%) |")
+              lines.append("| --- | --- | --- | --- |")
+              if totals:
+                  lines.append(
+                      f"| **Total** | {totals.get('num_statements', 0)} | "
+                      f"{totals.get('missing_lines', 0)} | "
+                      f"{totals.get('percent_covered', 0.0):.2f} |"
+                  )
+
+              def coverage_key(item):
+                  summary = item[1].get("summary", {})
+                  return summary.get("percent_covered", 0.0)
+
+              for raw_path, info in sorted(files.items(), key=coverage_key):
+                  summary = info.get("summary", {})
+                  rel_path = fmt_path(raw_path).replace("|", "\\|")
+                  lines.append(
+                      f"| {rel_path} | {summary.get('num_statements', 0)} | "
+                      f"{summary.get('missing_lines', 0)} | "
+                      f"{summary.get('percent_covered', 0.0):.2f} |"
+                  )
+          else:
+              lines.append("_coverage.json not found; coverage data unavailable._")
+
+          lines.append("")
+          lines.append("## Step Outcomes")
+          checks = [
+              ("Formatting", os.environ.get("FORMAT_OUTCOME", "")),
+              ("Lint", os.environ.get("LINT_OUTCOME", "")),
+              ("Type", os.environ.get("TYPE_OUTCOME", "")),
+              ("Tests", os.environ.get("TEST_OUTCOME", "")),
+          ]
+          lines.append("| Step | Outcome |")
+          lines.append("| --- | --- |")
+          for name, outcome in checks:
+              human = outcome or "not run"
+              lines.append(f"| {name} | {human} |")
+
+          with summary_path.open("a", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Fail if tests failed
+        if: steps.pytest.outcome == 'failure'
+        run: exit 1
