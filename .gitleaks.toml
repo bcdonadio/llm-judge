@@ -1,0 +1,14 @@
+# Extends the upstream gitleaks v8.28.0 defaults with project-specific rules.
+title = "llm-judge gitleaks configuration"
+
+extends = ["config/gitleaks.upstream.toml"]
+
+[[rules]]
+id = "openrouter-api-key"
+description = "OpenRouter API key"
+regex = '''sk-or-[a-z0-9]{2,}-[a-z0-9-]{32,}'''
+keywords = [
+    "openrouter_api_key",
+    "sk-or-",
+]
+tags = ["apikey", "openrouter"]
