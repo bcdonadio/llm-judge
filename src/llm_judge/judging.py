@@ -149,11 +149,7 @@ def judge_decide(
         )
         raw_content = extract_text(data)
         choices_obj = data.get("choices")
-        choice_dict = (
-            _ensure_dict(choices_obj[0])
-            if isinstance(choices_obj, list) and choices_obj
-            else {}
-        )
+        choice_dict = _ensure_dict(choices_obj[0]) if isinstance(choices_obj, list) and choices_obj else {}
         finish_value = choice_dict.get("finish_reason") or choice_dict.get("native_finish_reason")
         finish_reason = finish_value.lower() if isinstance(finish_value, str) else ""
 

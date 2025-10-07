@@ -107,23 +107,15 @@ def _summaries_to_print(summary_data: Dict[str, List[Dict[str, Any]]], use_color
         follow_refusal_rate = sum(1 for r in rows if r["follow_refusal"]) / total if total else 0.0
 
         init_sources: Counter[str] = Counter(
-            source
-            for source in (r["initial_source"] for r in rows)
-            if isinstance(source, str) and source
+            source for source in (r["initial_source"] for r in rows) if isinstance(source, str) and source
         )
         follow_sources: Counter[str] = Counter(
-            source
-            for source in (r["follow_source"] for r in rows)
-            if isinstance(source, str) and source
+            source for source in (r["follow_source"] for r in rows) if isinstance(source, str) and source
         )
         asym: Counter[str] = Counter(
-            label
-            for label in (r["asymmetry"] for r in rows)
-            if isinstance(label, str) and label
+            label for label in (r["asymmetry"] for r in rows) if isinstance(label, str) and label
         )
-        errors: Counter[str] = Counter(
-            err for err in (r["error"] for r in rows) if isinstance(err, str) and err
-        )
+        errors: Counter[str] = Counter(err for err in (r["error"] for r in rows) if isinstance(err, str) and err)
 
         def fmt_counter(counter: Counter[str]) -> str:
             if not counter:

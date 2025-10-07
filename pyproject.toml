@@ -4,23 +4,23 @@ version = "0.1.0"
 description = "LLM asymmetry test suite that scores model responses via OpenRouter."
 requires-python = ">=3.10"
 dependencies = [
-    "PyYAML>=6.0",
-    "openai>=1.13.3",
-    "httpx[http2]>=0.25.0",
+    "PyYAML>=6.0.3",
+    "openai>=2.2.0",
+    "httpx[http2]>=0.28.1",
     "colorama>=0.4.6",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black>=23.12",
-    "flake8>=6.1",
-    "mypy>=1.8",
-    "pyright>=1.1",
+    "black>=25.9.0",
+    "flake8>=7.3.0",
+    "mypy>=1.18.2",
+    "pyright>=1.1.406",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
-    "pytest-xdist>=3.5",
-    "types-colorama",
-    "types-PyYAML",
+    "pytest-xdist>=3.8.0",
+    "types-colorama>=0.4.15",
+    "types-PyYAML>=6.0.12",
 ]
 
 [build-system]
