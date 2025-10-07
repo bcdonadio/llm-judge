@@ -11,18 +11,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
-    "pytest>=7.4",
-    "pytest-cov>=4.1",
-    "pytest-xdist>=3.5",
-]
 dev = [
     "black>=23.12",
     "flake8>=6.1",
     "mypy>=1.8",
     "pyright>=1.1",
     "pytest>=8.4.2",
-    "pytest-cov>=4.1",
+    "pytest-cov>=7.0.0",
     "pytest-xdist>=3.5",
     "types-colorama",
     "types-PyYAML",

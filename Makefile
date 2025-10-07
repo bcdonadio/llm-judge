@@ -1,10 +1,10 @@
 .PHONY: check fmt lint lint-black lint-flake8 type type-mypy type-pyright test install
 
 UV ?= uv
-UV_RUN ?= $(UV) run --extra dev --extra test
+UV_RUN ?= $(UV) run --extra dev
 
 install:
-	$(UV) sync --extra dev --extra test
+	$(UV) sync --extra dev
 
 fmt:
 	$(UV_RUN) black .
