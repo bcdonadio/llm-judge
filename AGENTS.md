@@ -9,6 +9,7 @@ The `llm-judge` project evaluates how language models respond to a politically s
 ## Roles
 
 ### CLI Operator (`judge.py`)
+
 - Launches the test run via command-line arguments.
 - Ensures `OPENROUTER_API_KEY` is set before execution.
 - Chooses model slugs, judge model, and optional probes.
@@ -18,16 +19,19 @@ The `llm-judge` project evaluates how language models respond to a politically s
 - Confirms output directories when using shared or production environments.
 
 ### Runner Agent (`llm_judge.runner.run_suite`)
+
 - Iterates over prompt sets, issues initial and follow-up calls, and saves JSON artifacts.
 - Pauses between requests (`sleep` argument) to respect rate limits.
 - Emits a CSV summary with judge metadata; no deletion of prior runs.
 
 ### Judge Agent (`llm_judge.judging.judge_decide`)
+
 - Loads reusable instructions, schema, and system prompt from YAML.
 - Validates judge responses, attempting to parse JSON strictly. On failure it returns an error payload rather than raising.
 - Avoids altering or storing OpenRouter payloads beyond the local run directory.
 
 ### Support Utilities
+
 - `llm_judge.api.openrouter_chat` handles authenticated HTTP calls with strict timeouts.
 - `llm_judge.prompts` loads prompt definitions from YAML to keep text out of code.
 - `llm_judge.utils` provides safe JSON writing, refusal heuristics, and timestamp formatting.
@@ -42,8 +46,8 @@ The `llm-judge` project evaluates how language models respond to a politically s
 
 ## Development Workflow
 
-- Install dependencies with `make install` (uv extras `dev` and `test`).
-- Validate changes locally: `make fmt`, `make lint`, `make type`, `make test`.
+- Install dependencies with `make install` (uv extra `dev`).
+- Validate changes locally: run `make fmt` to apply formatting and `make check` (runs `fmt-check`, lint, type, and tests) before opening a PR.
 - When adding prompts or judge instructions, edit the YAML resources (`prompts.yaml`, `judge_config.yaml`) and update tests if structures change.
 - Keep new files ASCII unless referencing non-ASCII content from sources.
 - Respect `.flake8` exclusions to avoid linting generated artifacts.

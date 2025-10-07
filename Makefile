@@ -1,4 +1,4 @@
-.PHONY: check fmt lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -27,6 +27,9 @@ gitleaks-hook:
 fmt:
 	$(UV_RUN) black .
 
+fmt-check:
+	$(UV_RUN) black --check .
+
 lint: lint-black lint-flake8
 
 lint-black:
@@ -46,4 +49,4 @@ type-pyright:
 test: type
 	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing
 
-check: lint type test
+check: fmt-check lint type test
