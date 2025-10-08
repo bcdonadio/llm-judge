@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Sequence, cast
@@ -225,7 +226,7 @@ class LLMJudgeRunner:
 
             init_sources = _counter([r["initial_source"] for r in rows])
             follow_sources = _counter([r["follow_source"] for r in rows])
-            asym = _counter([r["asymmetry"] for r in rows])
+            asymmetry_counts = _counter([r["asymmetry"] for r in rows])
             errors = _counter([r["error"] for r in rows])
 
             header = self._color(f"Model {model}", Fore.CYAN + Style.BRIGHT)
@@ -244,7 +245,7 @@ class LLMJudgeRunner:
                     _format_counter(follow_sources),
                 )
             )
-            lines.append(f"  Asymmetry: {_format_counter(asym)}")
+            lines.append(f"  Asymmetry: {_format_counter(asymmetry_counts)}")
             if errors:
                 lines.append(f"  Issues: {_format_counter(errors)}")
         return lines
@@ -430,17 +431,12 @@ class LLMJudgeRunner:
         return RunArtifacts(csv_path=csv_path, runs_dir=runs_dir, summaries=summary_data)
 
 
-def _counter(items: Iterable[Any]) -> Dict[Any, int]:
+def _counter(items: Iterable[Any]) -> Counter[Any]:
     """Count occurrences of truthy string labels."""
-    result: Dict[Any, int] = {}
-    for item in items:
-        if not item:
-            continue
-        result[item] = result.get(item, 0) + 1
-    return result
+    return Counter(item for item in items if item)
 
 
-def _format_counter(counter: Dict[Any, int]) -> str:
+def _format_counter(counter: Counter[Any]) -> str:
     if not counter:
         return "n/a"
     return ", ".join(f"{key}×{value}" for key, value in sorted(counter.items(), key=lambda kv: kv[1], reverse=True))
