@@ -146,12 +146,16 @@ def test_configure_logging_defaults_to_warning(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_main_invokes_run_suite_with_expected_arguments(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    captured_kwargs: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
-    def fake_run_suite(**kwargs: Any) -> None:
-        captured_kwargs.update(kwargs)
+    class RecordingRunner:
+        def __init__(self, config: Any) -> None:
+            captured["config"] = config
 
-    monkeypatch.setattr(cli, "run_suite", fake_run_suite)
+        def run(self) -> None:
+            captured["run_called"] = True
+
+    monkeypatch.setattr(cli, "LLMJudgeRunner", RecordingRunner)
 
     def fake_configure_logging(debug: bool, verbose: bool) -> str:
         assert debug is True
@@ -177,22 +181,28 @@ def test_main_invokes_run_suite_with_expected_arguments(monkeypatch: pytest.Monk
 
     exit_code = cli.main(argv)
     assert exit_code == 0
-    assert captured_kwargs["models"] == ["model-1"]
-    assert captured_kwargs["judge_model"] == "judge-1"
-    assert captured_kwargs["outdir"] == outdir
-    assert math.isclose(captured_kwargs["sleep_s"], 0.75)
-    assert captured_kwargs["limit"] == 3
-    assert captured_kwargs["use_color"] == "color-enabled"
+    config = captured["config"]
+    assert config.models == ["model-1"]
+    assert config.judge_model == "judge-1"
+    assert config.outdir == outdir
+    assert math.isclose(config.sleep_s, 0.75)
+    assert config.limit == 3
+    assert config.use_color == "color-enabled"
+    assert captured["run_called"] is True
     assert outdir.is_dir()
 
 
 def test_main_handles_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def fake_run_suite(**_: Any) -> None:
-        raise KeyboardInterrupt
+    class RaisingRunner:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            pass
 
-    monkeypatch.setattr(cli, "run_suite", fake_run_suite)
+        def run(self) -> None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "LLMJudgeRunner", RaisingRunner)
 
     def fake_configure_logging_noop(*args: Any, **kwargs: Any) -> bool:
         return False
@@ -207,12 +217,16 @@ def test_main_handles_keyboard_interrupt(
 
 
 def test_module_entry_point_executes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    run_kwargs: dict[str, Any] = {}
+    recorded: dict[str, Any] = {}
 
-    def fake_run_suite(**kwargs: Any) -> None:
-        run_kwargs.update(kwargs)
+    class RecordingRunner:
+        def __init__(self, config: Any) -> None:
+            recorded["config"] = config
 
-    monkeypatch.setattr(llm_judge, "run_suite", fake_run_suite)
+        def run(self) -> None:
+            recorded["run_called"] = True
+
+    monkeypatch.setattr(llm_judge, "LLMJudgeRunner", RecordingRunner)
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr(
         sys, "argv", ["judge.py", "--models", "run-model", "--judge-model", "judge-x", "--outdir", str(tmp_path)]
@@ -223,6 +237,8 @@ def test_module_entry_point_executes(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         runpy.run_path("judge.py", run_name="__main__")
 
     assert exc.value.code == 0
-    assert run_kwargs["models"] == ["run-model"]
-    assert run_kwargs["judge_model"] == "judge-x"
-    assert run_kwargs["outdir"] == tmp_path
+    config = recorded["config"]
+    assert config.models == ["run-model"]
+    assert config.judge_model == "judge-x"
+    assert config.outdir == tmp_path
+    assert recorded["run_called"] is True

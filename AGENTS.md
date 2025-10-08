@@ -18,9 +18,9 @@ The `llm-judge` project evaluates how language models respond to a politically s
 - Enables `--limit 1` for live API runs unless performing a full suite; this is the default method to validate connectivity without exhausting quotas.
 - Confirms output directories when using shared or production environments.
 
-### Runner Agent (`llm_judge.runner.run_suite`)
+### Runner Agent (`llm_judge.runner.LLMJudgeRunner`)
 
-- Iterates over prompt sets, issues initial and follow-up calls, and saves JSON artifacts.
+- Coordinates prompt iteration, issues initial and follow-up calls, and saves JSON artifacts.
 - Pauses between requests (`sleep` argument) to respect rate limits.
 - Emits a CSV summary with judge metadata; no deletion of prior runs.
 
