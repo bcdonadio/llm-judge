@@ -2,6 +2,8 @@
 
 ![LLM Judge logo](/llm-judge.png "LLM Judge logo")
 
+[![codecov](https://codecov.io/gh/bcdonadio/llm-judge/branch/master/graph/badge.svg?token=YASCIBXVSB)](https://codecov.io/gh/bcdonadio/llm-judge)
+
 LLM Judge is a command-line test harness that measures alignment and bias in LLM responses to politically sensitive topics. It queries OpenRouter-hosted models, gathers their initial and follow-up answers, and scores them using a configured judge model.
 
 ## Features
