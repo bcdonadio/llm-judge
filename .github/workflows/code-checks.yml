@@ -1,4 +1,4 @@
-name: PR Checks
+name: Code Checks
 
 on:
   pull_request:
@@ -9,35 +9,46 @@ on:
       - ready_for_review
   push:
     branches:
-      - main
+      - master
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Static Analysis and Tests
+  static-analysis:
+    name: Static Analysis
     runs-on: ubuntu-latest
     env:
       UV_PROJECT_ENVIRONMENT: .venv
+    outputs:
+      fmt_outcome: ${{ steps.fmtr.outcome }}
+      lint_outcome: ${{ steps.lint.outcome }}
+      type_outcome: ${{ steps.typecheck.outcome }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v1
+        if: ${{ env.ACT != 'true' }}
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
           cache-suffix: "linux-${{ runner.arch }}-py311"
 
+      - name: Set up uv (act compatibility)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh -s --
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Cache virtual environment
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: .venv
           key: uv-venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
@@ -57,6 +68,45 @@ jobs:
         id: typecheck
         run: make type
 
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs:
+      - static-analysis
+    env:
+      UV_PROJECT_ENVIRONMENT: .venv
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        if: ${{ env.ACT != 'true' }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: "linux-${{ runner.arch }}-py311"
+
+      - name: Set up uv (act compatibility)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh -s --
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache virtual environment
+        uses: actions/cache@v4.3.0
+        with:
+          path: .venv
+          key: uv-venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: make install
+
       - name: Run tests
         id: pytest
         continue-on-error: true
@@ -67,9 +117,26 @@ jobs:
             --cov-report=json:coverage.json \
             --junitxml=pytest-results.xml
 
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5.5.1
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: coverage.json
+          flags: pytest
+          disable_search: true
+          fail_ci_if_error: true
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1.1.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: pytest-artifacts
           retention-days: 7
@@ -80,9 +147,9 @@ jobs:
       - name: Publish workflow summary
         if: always()
         env:
-          FORMAT_OUTCOME: ${{ steps.fmtr.outcome }}
-          LINT_OUTCOME: ${{ steps.lint.outcome }}
-          TYPE_OUTCOME: ${{ steps.typecheck.outcome }}
+          FORMAT_OUTCOME: ${{ needs.static-analysis.outputs.fmt_outcome }}
+          LINT_OUTCOME: ${{ needs.static-analysis.outputs.lint_outcome }}
+          TYPE_OUTCOME: ${{ needs.static-analysis.outputs.type_outcome }}
           TEST_OUTCOME: ${{ steps.pytest.outcome }}
         run: |
           python <<'PY'
