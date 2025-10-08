@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from llm_judge import run_suite
+from llm_judge import LLMJudgeRunner, RunnerConfig
 from colorama import Fore, Style, init as colorama_init
 
 
@@ -138,7 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     try:
-        run_suite(
+        config = RunnerConfig(
             models=args.models,
             judge_model=args.judge_model,
             include_probes=args.include_probes,
@@ -152,6 +152,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             verbose=args.verbose,
             use_color=use_color,
         )
+        runner = LLMJudgeRunner(config)
+        runner.run()
     except KeyboardInterrupt:
         print("\n[Interrupted] Exiting.")
         return 130

@@ -1,6 +1,6 @@
 # pyright: reportPrivateUsage=false
 
-"""Tests covering the orchestration logic in ``runner.py``."""
+"""Tests covering the LLMJudgeRunner orchestration class."""
 
 from __future__ import annotations
 
@@ -8,78 +8,95 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, Iterable, List
 
 import pytest
 
-import llm_judge.runner as runner
+from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, run_suite
+
+
+def build_config(
+    tmp_path: Path,
+    *,
+    models: Iterable[str] = (),
+    include_probes: bool = False,
+    limit: int | None = None,
+    verbose: bool = False,
+    use_color: bool = False,
+) -> RunnerConfig:
+    return RunnerConfig(
+        models=list(models),
+        judge_model="judge-model",
+        include_probes=include_probes,
+        outdir=tmp_path,
+        max_tokens=16,
+        judge_max_tokens=32,
+        temperature=0.2,
+        judge_temperature=0.0,
+        sleep_s=0.0,
+        limit=limit,
+        verbose=verbose,
+        use_color=use_color,
+    )
 
 
 def test_snippet_behaviour() -> None:
-    assert runner._snippet("", limit=10) == "(empty)"
+    assert LLMJudgeRunner._snippet("", limit=10) == "(empty)"
     text = "word " * 100
-    truncated = runner._snippet(text, limit=20)
+    truncated = LLMJudgeRunner._snippet(text, limit=20)
     assert truncated.endswith("…")
     assert len(truncated) == 20
 
 
-def test_color_toggle() -> None:
-    plain = runner._color("hello", "X", use_color=False)
-    colored = runner._color("hello", "X", use_color=True)
-    assert plain == "hello"
+def test_color_toggle(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=[], use_color=True))
+    plain_runner = LLMJudgeRunner(build_config(tmp_path, models=[], use_color=False))
+    colored = runner._color("hello", "X")
+    plain = plain_runner._color("hello", "X")
     assert colored.startswith("X") and colored.endswith("hello\x1b[0m")
+    assert plain == "hello"
 
 
-def test_verbose_logging_helpers(caplog: pytest.LogCaptureFixture) -> None:
+def test_verbose_logging_helpers(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="llm_judge.runner")
-    runner._verbose_log_prompt(verbose=True, idx=1, prompt="Example prompt", use_color=False)
-    runner._verbose_log_response(verbose=True, label="Initial", text="Answer", use_color=False)
-    runner._verbose_log_response(verbose=True, label="Judge", text="Decision", use_color=True)
+    cfg = build_config(tmp_path, models=[], verbose=True, use_color=False)
+    runner = LLMJudgeRunner(cfg)
+
+    runner._verbose_log_prompt(idx=1, prompt="Example prompt")
+    runner._verbose_log_response(label="Initial", text="Answer")
+    runner._verbose_log_response(label="Judge", text="Decision")
     runner._verbose_log_judge(
-        verbose=True,
         judge_result={"ok": True},
         initial_decision={"refusal": False, "completeness": 3, "sourcing_quality": "high"},
         follow_decision={"refusal": True, "completeness": 1, "sourcing_quality": "low"},
         asymmetry="initial",
         final_notes="Detailed notes",
-        use_color=False,
     )
     runner._verbose_log_judge(
-        verbose=True,
         judge_result={"ok": False, "error": "timeout"},
         initial_decision={},
         follow_decision={},
         asymmetry="",
         final_notes="",
-        use_color=True,
     )
-    runner._verbose_log_prompt(verbose=False, idx=2, prompt="Quiet", use_color=False)
-    runner._verbose_log_response(verbose=False, label="Initial", text="Ignored", use_color=False)
+    runner._verbose_log_prompt(idx=2, prompt="Quiet")
+    runner._verbose_log_response(label="Judge", text="Ignored")
     runner._verbose_log_judge(
-        verbose=False,
-        judge_result={},
-        initial_decision={},
-        follow_decision={},
-        asymmetry="",
-        final_notes="",
-        use_color=False,
-    )
-    runner._verbose_log_judge(
-        verbose=True,
         judge_result={"ok": True},
         initial_decision={},
         follow_decision={},
         asymmetry="none",
         final_notes="",
-        use_color=False,
     )
+
     output = "".join(caplog.messages)
     assert "Prompt 01" in output
     assert "Initial" in output and "Decision" in output
     assert "timeout" in output
 
 
-def test_summaries_and_recording() -> None:
+def test_summaries_and_recording(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=[], verbose=False))
     summary: Dict[str, List[Dict[str, Any]]] = {}
     initial_decision = {"refusal": False, "completeness": 2, "sourcing_quality": "books"}
     follow_decision = {"refusal": True, "completeness": 1, "sourcing_quality": "articles"}
@@ -95,20 +112,20 @@ def test_summaries_and_recording() -> None:
         {"refusal": False, "completeness": 1, "sourcing_quality": ""},
         "none",
     )
-    lines = runner._summaries_to_print(summary, use_color=False)
+    lines = runner._summaries_to_print(summary)
     assert lines
     assert any("Model model-a" in line for line in lines)
     assert any("Issues" in line for line in lines)
     assert any("n/a" in line for line in lines)
 
 
-def test_fetch_completion_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_completion_success(tmp_path: Path) -> None:
     payload = {"choices": [{"message": {"content": "Helpful"}}]}
 
-    def fake_chat(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def fake_chat(*_: Any, **__: Any) -> Dict[str, Any]:
         return payload
 
-    monkeypatch.setattr(runner, "openrouter_chat", fake_chat)
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False), chat_client=fake_chat)
     text, returned = runner._fetch_completion(
         model="model-x",
         messages=[{"role": "user", "content": "Hi"}],
@@ -117,17 +134,16 @@ def test_fetch_completion_success(monkeypatch: pytest.MonkeyPatch) -> None:
         metadata={},
         step="Initial",
         prompt_index=0,
-        use_color=False,
     )
     assert text == "Helpful"
     assert returned is payload
 
 
-def test_fetch_completion_handles_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raising_chat(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+def test_fetch_completion_handles_errors(tmp_path: Path) -> None:
+    def raising_chat(*_: Any, **__: Any) -> Dict[str, Any]:
         raise RuntimeError("network down")
 
-    monkeypatch.setattr(runner, "openrouter_chat", raising_chat)
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False), chat_client=raising_chat)
     text, returned = runner._fetch_completion(
         model="model-x",
         messages=[],
@@ -136,38 +152,40 @@ def test_fetch_completion_handles_errors(monkeypatch: pytest.MonkeyPatch) -> Non
         metadata={},
         step="Initial",
         prompt_index=0,
-        use_color=False,
     )
     assert text == "[ERROR] network down"
     assert returned == {"error": "network down"}
 
 
-def test_iter_prompts_matches_configuration() -> None:
+def test_default_prompt_loader_matches_configuration() -> None:
     from llm_judge.prompts import CORE_PROMPTS, PROBES
 
-    assert runner._iter_prompts(include_probes=False) == CORE_PROMPTS
-    assert runner._iter_prompts(include_probes=True) == CORE_PROMPTS + PROBES
+    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=False)) == CORE_PROMPTS
+    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=True)) == CORE_PROMPTS + PROBES
 
 
-def test_run_suite_creates_outputs(
+def test_ensure_dict_handles_non_dict(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=[]))
+    original = runner._ensure_dict({"a": 1})
+    assert original["a"] == 1
+    assert runner._ensure_dict(None) == {}
+
+
+def test_run_creates_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     prompts = ["Prompt one", "Prompt two"]
 
-    def fake_iter(include_probes: bool) -> List[str]:
+    def fake_prompts(include_probes: bool) -> List[str]:
+        assert include_probes is True
         return prompts
 
-    monkeypatch.setattr(runner, "_iter_prompts", fake_iter)
-
     def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
-        step = cast(str, kwargs["step"])
-        content = {
-            "Initial": "Initial answer",
-            "Follow-up": "Follow answer",
-        }[step]
+        step = kwargs["step"]
+        content = {"Initial": "Initial answer", "Follow-up": "Follow answer"}[step]
         return {"choices": [{"message": {"content": content}}]}
 
-    def fake_judge_decide(**kwargs: Any) -> Dict[str, Any]:
+    def fake_judge_decide(**_: Any) -> Dict[str, Any]:
         return {
             "ok": True,
             "decision": {
@@ -188,40 +206,38 @@ def test_run_suite_creates_outputs(
             },
         }
 
-    monkeypatch.setattr(runner, "openrouter_chat", fake_chat)
-    monkeypatch.setattr(runner, "judge_decide", fake_judge_decide)
-
     def fake_now_iso() -> str:
         return "2025-01-01T00:00:00Z"
 
-    def fake_sleep(*args: object, **kwargs: object) -> None:
+    def fake_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr(runner, "now_iso", fake_now_iso)
-    monkeypatch.setattr(runner.time, "sleep", fake_sleep)
-
-    runner.run_suite(
+    cfg = build_config(
+        tmp_path,
         models=["model-x"],
-        judge_model="judge-y",
         include_probes=True,
-        outdir=tmp_path,
-        max_tokens=16,
-        judge_max_tokens=32,
-        temperature=0.2,
-        judge_temperature=0.4,
-        sleep_s=0.0,
         limit=1,
         verbose=True,
         use_color=True,
     )
+    runner = LLMJudgeRunner(
+        cfg,
+        prompt_loader=fake_prompts,
+        chat_client=fake_chat,
+        judge_client=fake_judge_decide,
+        now_provider=fake_now_iso,
+        sleep_func=fake_sleep,
+    )
 
+    artifacts = runner.run()
     captured = capsys.readouterr()
     assert "[OK] CSV" in captured.out
     assert "[OK] Summary" in captured.out
+    assert isinstance(artifacts, RunArtifacts)
+    assert artifacts.csv_path.exists()
 
     csv_files = list(tmp_path.glob("results_*.csv"))
     assert len(csv_files) == 1
-
     with csv_files[0].open("r", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     assert rows and rows[0]["prompt_text"] == "Prompt one"
@@ -238,49 +254,35 @@ def test_run_suite_creates_outputs(
     assert judge_payload["ok"] is True
 
 
-def test_run_suite_with_no_models(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_run_handles_no_models(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def iter_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts(include_probes: bool) -> List[str]:
         return ["Prompt"]
 
-    def fake_sleep(*args: object, **kwargs: object) -> None:
+    def fake_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr(runner, "_iter_prompts", iter_prompts)
-    monkeypatch.setattr(runner.time, "sleep", fake_sleep)
-
-    runner.run_suite(
-        models=[],
-        judge_model="judge",
-        include_probes=False,
-        outdir=tmp_path,
-        max_tokens=8,
-        judge_max_tokens=8,
-        temperature=0.0,
-        judge_temperature=0.0,
-        sleep_s=0.0,
-        limit=None,
-        verbose=False,
-        use_color=False,
+    runner = LLMJudgeRunner(
+        build_config(tmp_path, models=[], include_probes=False, verbose=False),
+        prompt_loader=fake_prompts,
+        sleep_func=fake_sleep,
     )
-
+    runner.run()
     captured = capsys.readouterr()
     assert "[OK] Summary" not in captured.out
 
 
-def test_run_suite_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prompts = ["Single"]
 
-    def iter_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts(include_probes: bool) -> List[str]:
         return prompts
 
-    def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
-        step = cast(str, kwargs["step"])
-        content = "initial" if step == "Initial" else "follow"
-        return {"choices": [{"message": {"content": content}}]}
+    def fake_chat(*_: Any, **__: Any) -> Dict[str, Any]:
+        return {"choices": [{"message": {"content": "initial"}}]}
 
-    def fake_judge(**kwargs: Any) -> Dict[str, Any]:
+    def fake_judge(**_: Any) -> Dict[str, Any]:
         return {
             "ok": True,
             "decision": {
@@ -291,20 +293,32 @@ def test_run_suite_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             },
         }
 
-    monkeypatch.setattr(runner, "openrouter_chat", fake_chat)
-    monkeypatch.setattr(runner, "judge_decide", fake_judge)
-
-    def fake_now_iso() -> str:
-        return "2025-01-01T00:00:00Z"
-
-    def fake_sleep(*args: object, **kwargs: object) -> None:
+    def fake_sleep(_: float) -> None:
         return None
 
-    monkeypatch.setattr(runner, "_iter_prompts", iter_prompts)
-    monkeypatch.setattr(runner, "now_iso", fake_now_iso)
-    monkeypatch.setattr(runner.time, "sleep", fake_sleep)
+    runner = LLMJudgeRunner(
+        build_config(tmp_path, models=["model"], include_probes=False),
+        prompt_loader=fake_prompts,
+        chat_client=fake_chat,
+        judge_client=fake_judge,
+        sleep_func=fake_sleep,
+    )
+    runner.run()
 
-    runner.run_suite(
+    csv_files = list(tmp_path.glob("results_*.csv"))
+    assert csv_files
+
+
+def test_run_suite_uses_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    called: dict[str, Any] = {}
+
+    def fake_run(self: LLMJudgeRunner) -> RunArtifacts:
+        called["config"] = self.config
+        return RunArtifacts(csv_path=tmp_path / "file.csv", runs_dir=tmp_path / "runs", summaries={})
+
+    monkeypatch.setattr(LLMJudgeRunner, "run", fake_run)
+
+    artifacts = run_suite(
         models=["model"],
         judge_model="judge",
         include_probes=False,
@@ -319,5 +333,5 @@ def test_run_suite_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         use_color=False,
     )
 
-    csv_files = list(tmp_path.glob("results_*.csv"))
-    assert csv_files
+    assert isinstance(artifacts, RunArtifacts)
+    assert called["config"].judge_model == "judge"

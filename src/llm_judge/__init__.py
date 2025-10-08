@@ -10,7 +10,7 @@ from .judging import (
     judge_decide,
 )
 from .prompts import CORE_PROMPTS, FOLLOW_UP, PROBES
-from .runner import run_suite
+from .runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, run_suite
 from .utils import detect_refusal, extract_text, now_iso, safe_write_json
 
 __all__ = [
@@ -24,6 +24,9 @@ __all__ = [
     "detect_refusal",
     "extract_text",
     "now_iso",
+    "LLMJudgeRunner",
+    "RunArtifacts",
+    "RunnerConfig",
     "openrouter_chat",
     "run_suite",
     "safe_write_json",
