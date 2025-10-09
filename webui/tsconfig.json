@@ -1,15 +1,18 @@
 {
   "extends": "@tsconfig/svelte/tsconfig.json",
   "compilerOptions": {
-    "moduleResolution": "node",
-    "module": "esnext",
+    "moduleResolution": "bundler",
+    "module": "ESNext",
     "target": "ES2020",
+    "useDefineForClassFields": true,
     "baseUrl": ".",
     "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "types": ["vite/client", "node", "vitest"],
     "paths": {
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"],
+  "references": [{ "path": "./tsconfig.node.json" }]
 }

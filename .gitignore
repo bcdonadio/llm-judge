@@ -34,15 +34,19 @@ pip-wheel-metadata/
 
 # Testing
 .pytest_cache/
+pytest-*.xml
 .mypy_cache/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage.json
 coverage.xml
+webui/coverage/
 htmlcov/
 .dmypy.json
 dmypy.json
 .hypothesis/
+tmp-test/
 
 # Tooling outputs
 uv.lock.bak
@@ -62,3 +66,6 @@ webui/node_modules/
 # OS-level clutter
 .DS_Store
 Thumbs.db
+
+# Assistant files
+.claude/

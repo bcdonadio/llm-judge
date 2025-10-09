@@ -53,12 +53,12 @@ def api_start_run() -> Response:
     payload: Dict[str, Any] = request.get_json(silent=True) or {}
     try:
         cfg = manager.start_run(payload)
-    except ValueError as exc:
-        response = jsonify({"error": str(exc)})
+    except ValueError:
+        response = jsonify({"error": "Invalid configuration provided"})
         response.status_code = 400
         return response
-    except RuntimeError as exc:
-        response = jsonify({"error": str(exc)})
+    except RuntimeError:
+        response = jsonify({"error": "A run is already in progress"})
         response.status_code = 409
         return response
     return jsonify({"status": "started", "config": cfg})
@@ -96,7 +96,7 @@ def api_events() -> Response:
 @frontend_bp.route("/", defaults={"path": ""})
 @frontend_bp.route("/<path:path>")
 def serve_frontend(path: str) -> Response:
-    dist_dir = Path(current_app.config["FRONTEND_DIST"])
+    dist_dir = Path(current_app.config["FRONTEND_DIST"]).resolve()
     if not dist_dir.exists():
         response = jsonify(
             {
@@ -107,8 +107,20 @@ def serve_frontend(path: str) -> Response:
         response.status_code = 503
         return response
 
-    if path and (dist_dir / path).is_file():
-        return send_from_directory(dist_dir, path)
+    if path:
+        # Prevent path traversal attacks by ensuring resolved path is within dist_dir
+        requested_path = (dist_dir / path).resolve()
+        try:
+            requested_path.relative_to(dist_dir)
+        except ValueError:
+            # Path is outside dist_dir - reject the request
+            response = jsonify({"error": "Invalid path"})
+            response.status_code = 400
+            return response
+
+        if requested_path.is_file():
+            return send_from_directory(dist_dir, path)
+
     return send_from_directory(dist_dir, "index.html")
 
 
