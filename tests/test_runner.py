@@ -98,6 +98,13 @@ def test_limited_prompts_logs_when_truncated(tmp_path: Path, caplog: pytest.LogC
     assert any("Prompt limit applied" in message for message in caplog.messages)
 
 
+def test_limited_prompts_no_log_when_not_truncated(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=2))
+    caplog.set_level(logging.DEBUG, logger="llm_judge.runner")
+    runner._limited_prompts(["p1", "p2"])
+    assert not any("Prompt limit applied" in message for message in caplog.messages)
+
+
 class ImmediateStopControl:
     def wait_if_paused(self) -> None:
         return None

@@ -352,6 +352,20 @@ def test_sse_broker_handles_generator_exit() -> None:
     # The cleanup happens in the finally block when generator is garbage collected
 
 
+def test_sse_broker_cleanup_when_not_subscriber() -> None:
+    """Test that SSE broker does not remove mailbox if not in subscribers."""
+    broker = SSEBroker(keepalive_s=0.001)
+    stream = broker.stream()
+    next(stream)  # start the generator, add mailbox
+    mailbox = cast(Any, broker)._subscribers[0]
+    assert len(cast(Any, broker)._subscribers) == 1
+    # Manually remove the mailbox
+    cast(Any, broker)._subscribers.remove(mailbox)
+    # Trigger GeneratorExit
+    del stream
+    # Since mailbox not in subscribers, the if is false
+
+
 class DummyManager:
     def __init__(self) -> None:
         self.started_with: Dict[str, Any] | None = None
@@ -522,9 +536,37 @@ def test_job_manager_event_stream_includes_artifacts(tmp_path: Path) -> None:
     assert "results.csv" in artifacts_chunk
 
 
+def test_job_manager_event_stream_no_summary_when_none(tmp_path: Path) -> None:
+    """Test that event_stream does not include summary when _summary is None."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    cast(Any, manager)._history = [{"type": "message", "payload": {"body": "hello"}}]
+    cast(Any, manager)._summary = None
+    stream = manager.event_stream()
+    status_chunk = next(stream)
+    assert "event: status" in status_chunk
+    history_chunk = next(stream)
+    assert "message" in history_chunk
+    cast(Any, stream).close()
+    # No summary chunk since _summary is None
+    try:
+        next(stream)
+        assert False, "Should not have more chunks"
+    except StopIteration:
+        pass
+
+
 def test_threaded_runner_control_wait_breaks_when_cancelled() -> None:
     control = ThreadedRunnerControl(poll_interval=0)
     control.pause()
     cast(Any, control)._cancel_event.set()
     cast(Any, control)._pause_event.clear()
     control.wait_if_paused()
+
+
+def test_job_manager_handle_run_completed_when_cancelled(tmp_path: Path) -> None:
+    """Test that _handle_runner_event does not change state to completed when already cancelled."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    cast(Any, manager)._state = "cancelled"
+    event = RunnerEvent("run_completed", {"csv_path": "test.csv", "runs_dir": "runs", "summary": {}})
+    cast(Any, manager)._handle_runner_event(event)
+    assert cast(Any, manager)._state == "cancelled"

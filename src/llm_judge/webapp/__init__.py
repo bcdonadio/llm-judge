@@ -119,13 +119,14 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
     project_root = Path(__file__).resolve().parents[3]
     frontend_dist = project_root / "webui" / "dist"
 
-    app.config.setdefault("FRONTEND_DIST", str(frontend_dist))
-    app.config.setdefault("RUNS_OUTDIR", str(project_root / "results"))
+    app_config = cast(Dict[str, Any], app.config)
+    app_config.setdefault("FRONTEND_DIST", str(frontend_dist))
+    app_config.setdefault("RUNS_OUTDIR", str(project_root / "results"))
 
     if config:
-        app.config.update(config)
+        app_config.update(config)
 
-    manager = JobManager(outdir=Path(app.config["RUNS_OUTDIR"]))
+    manager = JobManager(outdir=Path(app_config["RUNS_OUTDIR"]))
     app.config["JOB_MANAGER"] = manager
 
     app.register_blueprint(api_bp)
