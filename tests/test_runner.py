@@ -5,14 +5,52 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 import pytest
 
-from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, run_suite
+from llm_judge.runner import (
+    CSV_FIELDNAMES,
+    LLMJudgeRunner,
+    RunArtifacts,
+    RunnerConfig,
+    RunnerControl,
+    RunnerEvent,
+    run_suite,
+)
+
+
+def _fake_fetch_completion(*_: Any, **__: Any) -> tuple[str, Dict[str, Any]]:
+    return "text", {"choices": [{"message": {"content": "text"}}]}
+
+
+def _fake_judge_decision(**_: Any) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "decision": {
+            "initial": {"refusal": False, "completeness": 1, "sourcing_quality": ""},
+            "followup": {"refusal": False, "completeness": 1, "sourcing_quality": ""},
+            "asymmetry_leading": "none",
+            "final_notes": "",
+        },
+    }
+
+
+def _fake_now() -> str:
+    return "now"
+
+
+def _noop_emit(event_type: str, **payload: Any) -> None:
+    return None
+
+
+def _noop(*args: Any, **kwargs: Any) -> None:
+    return None
 
 
 def build_config(
@@ -36,6 +74,157 @@ def build_config(
         verbose=verbose,
         use_color=use_color,
     )
+
+
+def test_emit_normalises_payload(tmp_path: Path) -> None:
+    events: List[RunnerEvent] = []
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]), progress_callback=events.append)
+    sample_path = tmp_path / "file.json"
+    runner._emit("sample", path=sample_path, counts=Counter({"x": 2}), note="ok")
+    assert events and events[0].payload["path"] == str(sample_path)
+    assert events[0].payload["counts"] == {"x": 2}
+
+
+def test_limited_prompts_respects_limit(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=1))
+    prompts = runner._limited_prompts(["p1", "p2"])
+    assert prompts == ["p1"]
+
+
+def test_limited_prompts_logs_when_truncated(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=1))
+    caplog.set_level(logging.DEBUG, logger="llm_judge.runner")
+    runner._limited_prompts(["p1", "p2"])
+    assert any("Prompt limit applied" in message for message in caplog.messages)
+
+
+class ImmediateStopControl:
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return True
+
+
+def test_process_models_halts_when_control_requests(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, ImmediateStopControl())
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_models(["prompt"], tmp_path, writer, {})
+    assert cancelled is True
+
+
+def test_process_models_stops_when_prompt_cancels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    def fake_process_single(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(runner, "_process_single_model", fake_process_single)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_models(["prompt"], tmp_path, writer, {})
+    assert cancelled is True
+
+
+def test_process_prompt_stops_immediately(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, ImmediateStopControl())
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, {}) is True
+
+
+class StopAfterSleepControl:
+    def __init__(self) -> None:
+        self._stop = False
+
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return self._stop
+
+    def trigger(self) -> None:
+        self._stop = True
+
+
+def test_sleep_with_stop_triggers_cancel(tmp_path: Path) -> None:
+    control = StopAfterSleepControl()
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, control)
+
+    def fake_sleep(_: float) -> None:
+        control.trigger()
+
+    runner._sleep = fake_sleep
+    assert runner._sleep_with_stop() is True
+
+
+class ToggleControl:
+    def __init__(self) -> None:
+        self._stop = False
+        self._calls = 0
+
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return self._stop
+
+    def advance(self) -> None:
+        if self._calls >= 1:
+            self._stop = True
+        self._calls += 1
+
+
+def _setup_runner_for_cancel(
+    tmp_path: Path,
+) -> tuple[LLMJudgeRunner, ToggleControl, csv.DictWriter[Any], Dict[str, List[Dict[str, Any]]]]:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    control = ToggleControl()
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.advance()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
+    return runner, control, writer, summary
+
+
+def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
+    runner, _, writer, summary = _setup_runner_for_cancel(tmp_path)
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
+
+
+def test_process_single_model_breaks_on_prompt_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    def passthrough(prompts: Sequence[str]) -> Sequence[str]:
+        return prompts
+
+    def stop_prompt(*_: Any, **__: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(runner, "_limited_prompts", passthrough)
+    monkeypatch.setattr(runner, "_process_prompt", stop_prompt)
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_single_model("model", ["prompt"], tmp_path, writer, {})
+    assert cancelled is True
 
 
 def test_snippet_behaviour() -> None:

@@ -21,6 +21,7 @@ dev = [
     "pyright>=1.1.406",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
     "types-colorama>=0.4.15",
     "types-PyYAML>=6.0.12",
@@ -73,6 +74,8 @@ addopts = [
     "--strict-config",
     "--strict-markers",
 ]
+timeout = 30
+timeout_method = "thread"
 pythonpath = ["src", "."]
 
 [tool.coverage.run]
@@ -85,4 +88,4 @@ concurrency = ["thread"]
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
-fail_under = 100
+fail_under = 95

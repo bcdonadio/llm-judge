@@ -5,17 +5,12 @@ from __future__ import annotations
 import copy
 import logging
 import time
+from importlib import import_module
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List
+from threading import Event, RLock, Thread
+from typing import Any, Callable, Dict, Iterator, List, Protocol
 
-# Use gevent-compatible primitives when running under gevent workers
-try:
-    from gevent.event import Event
-    from gevent.lock import RLock as Lock
-except ImportError:
-    from threading import Event, Lock  # type: ignore
-
-from llm_judge.runner import LLMJudgeRunner, RunnerConfig, RunnerControl, RunnerEvent
+from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
 
 from .sse import SSEBroker, time_now_ms
 
@@ -52,7 +47,11 @@ class ThreadedRunnerControl(RunnerControl):
         return self._cancel_event.is_set()
 
 
-RunnerFactory = Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerControl], LLMJudgeRunner]
+class RunnerLike(Protocol):
+    def run(self) -> RunArtifacts: ...  # noqa: E704
+
+
+RunnerFactory = Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerControl], RunnerLike]
 
 
 class JobManager:
@@ -65,7 +64,7 @@ class JobManager:
         runner_factory: RunnerFactory | None = None,
         history_limit: int = 500,
     ) -> None:
-        self._lock = Lock()
+        self._lock = RLock()
         self._outdir = outdir or Path("results")
         self._runner_factory = runner_factory or self._default_runner_factory
         self._history_limit = history_limit
@@ -103,15 +102,15 @@ class JobManager:
             self._finished_at = None
             self._control = ThreadedRunnerControl()
 
-            # Use gevent-compatible thread if available
             try:
-                import gevent
+                gevent_module = import_module("gevent")
+            except ModuleNotFoundError:
+                gevent_module = None
 
-                worker = gevent.spawn(self._run_worker, config, self._control)
-            except ImportError:
-                import threading
-
-                worker = threading.Thread(
+            if gevent_module is not None:
+                worker = gevent_module.spawn(self._run_worker, config, self._control)
+            else:
+                worker = Thread(
                     target=self._run_worker,
                     args=(config, self._control),
                     daemon=True,
@@ -293,7 +292,8 @@ class JobManager:
         defaults = self.defaults()
         merged = {**defaults, **{k: v for k, v in payload.items() if v is not None}}
 
-        models = merged.get("models")
+        models_value = merged["models"]
+        models = models_value
         if isinstance(models, str):
             models = [m.strip() for m in models.split() if m.strip()]
         if not models:
@@ -302,17 +302,20 @@ class JobManager:
         outdir = Path(merged.get("outdir", self._outdir))
         outdir.mkdir(parents=True, exist_ok=True)
 
+        limit_value = merged.get("limit")
+        verbose_flag = bool(merged.get("verbose", False))
+
         return RunnerConfig(
             models=list(models),
-            judge_model=str(merged.get("judge_model")),
+            judge_model=str(merged["judge_model"]),
             outdir=outdir,
-            max_tokens=int(merged.get("max_tokens")),
-            judge_max_tokens=int(merged.get("judge_max_tokens")),
-            temperature=float(merged.get("temperature")),
-            judge_temperature=float(merged.get("judge_temperature")),
-            sleep_s=float(merged.get("sleep_s")),
-            limit=int(merged["limit"]) if merged.get("limit") is not None else None,
-            verbose=bool(merged.get("verbose", False)),
+            max_tokens=int(merged["max_tokens"]),
+            judge_max_tokens=int(merged["judge_max_tokens"]),
+            temperature=float(merged["temperature"]),
+            judge_temperature=float(merged["judge_temperature"]),
+            sleep_s=float(merged["sleep_s"]),
+            limit=int(limit_value) if limit_value is not None else None,
+            verbose=verbose_flag,
             use_color=False,
         )
 

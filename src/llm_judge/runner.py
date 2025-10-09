@@ -19,6 +19,31 @@ from .utils import detect_refusal, extract_text, now_iso, safe_write_json
 
 LOGGER = logging.getLogger(__name__)
 
+CSV_FIELDNAMES = [
+    "timestamp_utc",
+    "model",
+    "prompt_index",
+    "prompt_text",
+    "response_initial",
+    "response_followup",
+    "heuristic_refused_initial",
+    "heuristic_refused_followup",
+    "judge_model",
+    "judge_initial_refusal",
+    "judge_initial_completeness",
+    "judge_initial_sourcing",
+    "judge_followup_refusal",
+    "judge_followup_completeness",
+    "judge_followup_sourcing",
+    "judge_asymmetry_leading",
+    "judge_safety_flags_initial",
+    "judge_safety_flags_followup",
+    "judge_final_notes",
+    "raw_initial_path",
+    "raw_followup_path",
+    "raw_judge_path",
+]
+
 
 @dataclass(frozen=True)
 class RunnerConfig:
@@ -322,6 +347,244 @@ class LLMJudgeRunner:
                 lines.append(f"  Issues: {_format_counter(errors)}")
         return lines
 
+    def _limited_prompts(self, prompts: Sequence[str]) -> Sequence[str]:
+        if self.config.limit is None:
+            return prompts
+        limited = prompts[: self.config.limit]
+        if self.config.limit < len(prompts):
+            self._logger.debug("Prompt limit applied (%d of %d prompts)", self.config.limit, len(prompts))
+        return limited
+
+    def _process_models(
+        self,
+        prompts: Sequence[str],
+        runs_dir: Path,
+        writer: csv.DictWriter[Any],
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        for model in self.config.models:
+            if self._control.should_stop():
+                return True
+            if self._process_single_model(model, prompts, runs_dir, writer, summary_data):
+                return True
+        return False
+
+    def _process_single_model(
+        self,
+        model: str,
+        prompts: Sequence[str],
+        runs_dir: Path,
+        writer: csv.DictWriter[Any],
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        model_dir = runs_dir / str(model).replace("/", "_")
+        model_dir.mkdir(parents=True, exist_ok=True)
+        self._logger.debug("Processing model '%s' (%d prompts)", model, len(prompts))
+
+        prompt_sequence = self._limited_prompts(prompts)
+        self._emit("model_started", model=model, total_prompts=len(prompt_sequence))
+
+        for idx, prompt in enumerate(prompt_sequence):
+            if self._process_prompt(model, model_dir, idx, prompt, writer, summary_data):
+                return True
+        return False
+
+    def _process_prompt(
+        self,
+        model: str,
+        model_dir: Path,
+        idx: int,
+        prompt: str,
+        writer: csv.DictWriter[Any],
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        if self._should_stop():
+            return True
+
+        metadata: Dict[str, str] = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
+        self._verbose_log_prompt(idx, prompt)
+        self._emit(
+            "message",
+            model=model,
+            prompt_index=idx,
+            step="prompt",
+            role="user",
+            content=prompt,
+        )
+
+        messages_initial = [{"role": "user", "content": prompt}]
+        text_initial, completion_initial = self._fetch_completion(
+            model,
+            messages_initial,
+            self.config.max_tokens,
+            self.config.temperature,
+            metadata,
+            "Initial",
+            idx,
+        )
+        self._verbose_log_response("Initial", text_initial)
+        self._emit(
+            "message",
+            model=model,
+            prompt_index=idx,
+            step="initial",
+            role="assistant",
+            content=text_initial,
+        )
+
+        messages_followup = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": text_initial},
+            {"role": "user", "content": FOLLOW_UP},
+        ]
+        self._emit(
+            "message",
+            model=model,
+            prompt_index=idx,
+            step="followup_prompt",
+            role="user",
+            content=FOLLOW_UP,
+        )
+
+        if self._sleep_with_stop():
+            return True
+
+        text_follow, completion_follow = self._fetch_completion(
+            model,
+            messages_followup,
+            self.config.max_tokens,
+            self.config.temperature,
+            metadata,
+            "Follow-up",
+            idx,
+        )
+        self._verbose_log_response("Follow-up", text_follow)
+        self._emit(
+            "message",
+            model=model,
+            prompt_index=idx,
+            step="followup",
+            role="assistant",
+            content=text_follow,
+        )
+
+        initial_path = model_dir / f"{idx:02d}_initial.json"
+        follow_path = model_dir / f"{idx:02d}_followup.json"
+        safe_write_json(initial_path, completion_initial)
+        safe_write_json(follow_path, completion_follow)
+
+        heur_refusal_initial = detect_refusal(text_initial)
+        heur_refusal_follow = detect_refusal(text_follow)
+
+        if self._sleep_with_stop():
+            return True
+
+        judge_result = self._judge_client(
+            judge_model=self.config.judge_model,
+            prompt=prompt,
+            initial_resp=text_initial,
+            follow_resp=text_follow,
+            max_tokens=self.config.judge_max_tokens,
+            temperature=self.config.judge_temperature,
+            meta=metadata,
+            prompt_index=idx,
+            use_color=self.config.use_color,
+        )
+
+        judge_path = model_dir / f"{idx:02d}_judge.json"
+        safe_write_json(judge_path, judge_result)
+
+        decision_dict = self._ensure_dict(judge_result.get("decision"))
+        initial_decision = self._ensure_dict(decision_dict.get("initial"))
+        follow_decision = self._ensure_dict(decision_dict.get("followup"))
+        asymmetry_value = decision_dict.get("asymmetry_leading")
+        asymmetry = asymmetry_value if isinstance(asymmetry_value, str) else "unclear"
+        notes_value = decision_dict.get("final_notes")
+        final_notes = notes_value if isinstance(notes_value, str) else ""
+
+        self._verbose_log_judge(judge_result, initial_decision, follow_decision, asymmetry, final_notes)
+        self._emit(
+            "judge",
+            model=model,
+            prompt_index=idx,
+            asymmetry=asymmetry,
+            notes=final_notes,
+            decision=decision_dict,
+            ok=bool(judge_result.get("ok")),
+            error=judge_result.get("error"),
+        )
+
+        writer.writerow(
+            {
+                "timestamp_utc": self._now(),
+                "model": model,
+                "prompt_index": idx,
+                "prompt_text": prompt,
+                "response_initial": text_initial,
+                "response_followup": text_follow,
+                "heuristic_refused_initial": heur_refusal_initial,
+                "heuristic_refused_followup": heur_refusal_follow,
+                "judge_model": self.config.judge_model,
+                "judge_initial_refusal": initial_decision.get("refusal"),
+                "judge_initial_completeness": initial_decision.get("completeness"),
+                "judge_initial_sourcing": initial_decision.get("sourcing_quality"),
+                "judge_followup_refusal": follow_decision.get("refusal"),
+                "judge_followup_completeness": follow_decision.get("completeness"),
+                "judge_followup_sourcing": follow_decision.get("sourcing_quality"),
+                "judge_asymmetry_leading": asymmetry,
+                "judge_safety_flags_initial": (
+                    ",".join(initial_decision.get("safety_flags", []))
+                    if isinstance(initial_decision.get("safety_flags"), list)
+                    else initial_decision.get("safety_flags")
+                ),
+                "judge_safety_flags_followup": (
+                    ",".join(follow_decision.get("safety_flags", []))
+                    if isinstance(follow_decision.get("safety_flags"), list)
+                    else follow_decision.get("safety_flags")
+                ),
+                "judge_final_notes": final_notes,
+                "raw_initial_path": str(initial_path),
+                "raw_followup_path": str(follow_path),
+                "raw_judge_path": str(judge_path),
+            }
+        )
+
+        self._record_summary(summary_data, model, judge_result, initial_decision, follow_decision, asymmetry)
+        snapshot = self._summary_stats(summary_data)
+        self._emit("summary", summary=snapshot, model=model, prompt_index=idx)
+
+        if self._sleep_with_stop():
+            return True
+        return False
+
+    def _should_stop(self) -> bool:
+        self._control.wait_if_paused()
+        return self._control.should_stop()
+
+    def _sleep_with_stop(self) -> bool:
+        self._control.wait_if_paused()
+        self._sleep(self.config.sleep_s)
+        return self._control.should_stop()
+
+    def _finalize_run(
+        self,
+        cancelled: bool,
+        csv_path: Path,
+        runs_dir: Path,
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> None:
+        summary_snapshot = self._summary_stats(summary_data)
+        event_type = "run_cancelled" if cancelled else "run_completed"
+        self._emit(event_type, csv_path=csv_path, runs_dir=runs_dir, summary=summary_snapshot)
+
+        print(self._color(f"[OK] CSV: {csv_path}", Fore.GREEN + Style.BRIGHT))
+        print(self._color(f"[OK] Raw JSON per-call under: {runs_dir}", Fore.GREEN + Style.BRIGHT))
+        summary_lines = self._summaries_to_print(summary_data)
+        if summary_lines:
+            print(self._color("[OK] Summary", Fore.GREEN + Style.BRIGHT))
+            for line in summary_lines:
+                print(line)
+
     # --------------------------------------------------------------------- #
     # Public API
 
@@ -349,246 +612,15 @@ class LLMJudgeRunner:
             len(prompts),
         )
 
-        fieldnames = [
-            "timestamp_utc",
-            "model",
-            "prompt_index",
-            "prompt_text",
-            "response_initial",
-            "response_followup",
-            "heuristic_refused_initial",
-            "heuristic_refused_followup",
-            "judge_model",
-            "judge_initial_refusal",
-            "judge_initial_completeness",
-            "judge_initial_sourcing",
-            "judge_followup_refusal",
-            "judge_followup_completeness",
-            "judge_followup_sourcing",
-            "judge_asymmetry_leading",
-            "judge_safety_flags_initial",
-            "judge_safety_flags_followup",
-            "judge_final_notes",
-            "raw_initial_path",
-            "raw_followup_path",
-            "raw_judge_path",
-        ]
-
         summary_data: Dict[str, List[Dict[str, Any]]] = {}
         cancelled = False
 
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer: csv.DictWriter[Any] = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
+            cancelled = self._process_models(prompts, runs_dir, writer, summary_data)
 
-            for model in self.config.models:
-                if self._control.should_stop():
-                    cancelled = True
-                    break
-
-                model_dir = runs_dir / str(model).replace("/", "_")
-                model_dir.mkdir(parents=True, exist_ok=True)
-                self._logger.debug("Processing model '%s' (%d prompts)", model, len(prompts))
-
-                prompt_sequence = prompts if self.config.limit is None else prompts[: self.config.limit]
-                if self.config.limit is not None and self.config.limit < len(prompts):
-                    self._logger.debug("Prompt limit applied (%d of %d prompts)", self.config.limit, len(prompts))
-                self._emit("model_started", model=model, total_prompts=len(prompt_sequence))
-
-                for idx, prompt in enumerate(prompt_sequence):
-                    self._control.wait_if_paused()
-                    if self._control.should_stop():
-                        cancelled = True
-                        break
-
-                    metadata: Dict[str, str] = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
-                    self._verbose_log_prompt(idx, prompt)
-                    self._emit(
-                        "message",
-                        model=model,
-                        prompt_index=idx,
-                        step="prompt",
-                        role="user",
-                        content=prompt,
-                    )
-
-                    messages_initial = [{"role": "user", "content": prompt}]
-                    text_initial, completion_initial = self._fetch_completion(
-                        model,
-                        messages_initial,
-                        self.config.max_tokens,
-                        self.config.temperature,
-                        metadata,
-                        "Initial",
-                        idx,
-                    )
-                    self._verbose_log_response("Initial", text_initial)
-                    self._emit(
-                        "message",
-                        model=model,
-                        prompt_index=idx,
-                        step="initial",
-                        role="assistant",
-                        content=text_initial,
-                    )
-
-                    messages_followup = [
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": text_initial},
-                        {"role": "user", "content": FOLLOW_UP},
-                    ]
-                    self._emit(
-                        "message",
-                        model=model,
-                        prompt_index=idx,
-                        step="followup_prompt",
-                        role="user",
-                        content=FOLLOW_UP,
-                    )
-
-                    self._control.wait_if_paused()
-                    self._sleep(self.config.sleep_s)
-                    if self._control.should_stop():
-                        cancelled = True
-                        break
-
-                    text_follow, completion_follow = self._fetch_completion(
-                        model,
-                        messages_followup,
-                        self.config.max_tokens,
-                        self.config.temperature,
-                        metadata,
-                        "Follow-up",
-                        idx,
-                    )
-                    self._verbose_log_response("Follow-up", text_follow)
-                    self._emit(
-                        "message",
-                        model=model,
-                        prompt_index=idx,
-                        step="followup",
-                        role="assistant",
-                        content=text_follow,
-                    )
-
-                    initial_path = model_dir / f"{idx:02d}_initial.json"
-                    follow_path = model_dir / f"{idx:02d}_followup.json"
-                    safe_write_json(initial_path, completion_initial)
-                    safe_write_json(follow_path, completion_follow)
-
-                    heur_refusal_initial = detect_refusal(text_initial)
-                    heur_refusal_follow = detect_refusal(text_follow)
-
-                    self._control.wait_if_paused()
-                    self._sleep(self.config.sleep_s)
-                    if self._control.should_stop():
-                        cancelled = True
-                        break
-
-                    judge_result = self._judge_client(
-                        judge_model=self.config.judge_model,
-                        prompt=prompt,
-                        initial_resp=text_initial,
-                        follow_resp=text_follow,
-                        max_tokens=self.config.judge_max_tokens,
-                        temperature=self.config.judge_temperature,
-                        meta=metadata,
-                        prompt_index=idx,
-                        use_color=self.config.use_color,
-                    )
-
-                    judge_path = model_dir / f"{idx:02d}_judge.json"
-                    safe_write_json(judge_path, judge_result)
-
-                    decision_dict = self._ensure_dict(judge_result.get("decision"))
-                    initial_candidate = decision_dict.get("initial")
-                    follow_candidate = decision_dict.get("followup")
-                    initial_decision = self._ensure_dict(initial_candidate)
-                    follow_decision = self._ensure_dict(follow_candidate)
-                    asymmetry_value = decision_dict.get("asymmetry_leading")
-                    asymmetry = asymmetry_value if isinstance(asymmetry_value, str) else "unclear"
-                    notes_value = decision_dict.get("final_notes")
-                    final_notes = notes_value if isinstance(notes_value, str) else ""
-
-                    self._verbose_log_judge(judge_result, initial_decision, follow_decision, asymmetry, final_notes)
-                    self._emit(
-                        "judge",
-                        model=model,
-                        prompt_index=idx,
-                        asymmetry=asymmetry,
-                        notes=final_notes,
-                        decision=decision_dict,
-                        ok=bool(judge_result.get("ok")),
-                        error=judge_result.get("error"),
-                    )
-
-                    writer.writerow(
-                        {
-                            "timestamp_utc": self._now(),
-                            "model": model,
-                            "prompt_index": idx,
-                            "prompt_text": prompt,
-                            "response_initial": text_initial,
-                            "response_followup": text_follow,
-                            "heuristic_refused_initial": heur_refusal_initial,
-                            "heuristic_refused_followup": heur_refusal_follow,
-                            "judge_model": self.config.judge_model,
-                            "judge_initial_refusal": initial_decision.get("refusal"),
-                            "judge_initial_completeness": initial_decision.get("completeness"),
-                            "judge_initial_sourcing": initial_decision.get("sourcing_quality"),
-                            "judge_followup_refusal": follow_decision.get("refusal"),
-                            "judge_followup_completeness": follow_decision.get("completeness"),
-                            "judge_followup_sourcing": follow_decision.get("sourcing_quality"),
-                            "judge_asymmetry_leading": asymmetry,
-                            "judge_safety_flags_initial": (
-                                ",".join(initial_decision.get("safety_flags", []))
-                                if isinstance(initial_decision.get("safety_flags"), list)
-                                else initial_decision.get("safety_flags")
-                            ),
-                            "judge_safety_flags_followup": (
-                                ",".join(follow_decision.get("safety_flags", []))
-                                if isinstance(follow_decision.get("safety_flags"), list)
-                                else follow_decision.get("safety_flags")
-                            ),
-                            "judge_final_notes": final_notes,
-                            "raw_initial_path": str(initial_path),
-                            "raw_followup_path": str(follow_path),
-                            "raw_judge_path": str(judge_path),
-                        }
-                    )
-
-                    self._record_summary(
-                        summary_data, model, judge_result, initial_decision, follow_decision, asymmetry
-                    )
-                    snapshot = self._summary_stats(summary_data)
-                    self._emit("summary", summary=snapshot, model=model, prompt_index=idx)
-
-                    self._control.wait_if_paused()
-                    self._sleep(self.config.sleep_s)
-                    if self._control.should_stop():
-                        cancelled = True
-                        break
-
-            if cancelled:
-                self._emit(
-                    "run_cancelled", csv_path=csv_path, runs_dir=runs_dir, summary=self._summary_stats(summary_data)
-                )
-            else:
-                self._emit(
-                    "run_completed",
-                    csv_path=csv_path,
-                    runs_dir=runs_dir,
-                    summary=self._summary_stats(summary_data),
-                )
-
-        print(self._color(f"[OK] CSV: {csv_path}", Fore.GREEN + Style.BRIGHT))
-        print(self._color(f"[OK] Raw JSON per-call under: {runs_dir}", Fore.GREEN + Style.BRIGHT))
-        summary_lines = self._summaries_to_print(summary_data)
-        if summary_lines:
-            print(self._color("[OK] Summary", Fore.GREEN + Style.BRIGHT))
-            for line in summary_lines:
-                print(line)
-
+        self._finalize_run(cancelled, csv_path, runs_dir, summary_data)
         return RunArtifacts(csv_path=csv_path, runs_dir=runs_dir, summaries=summary_data)
 
 

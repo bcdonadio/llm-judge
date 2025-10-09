@@ -3,11 +3,113 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
-from flask import Flask, Response, current_app, jsonify, request, send_from_directory
+from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
 from .job_manager import JobManager
+
+api_bp = Blueprint("api", __name__, url_prefix="/api")
+frontend_bp = Blueprint("frontend", __name__)
+
+
+def _manager() -> JobManager:
+    return cast(JobManager, current_app.config["JOB_MANAGER"])
+
+
+def _toggle_response(
+    action: str,
+    success_state: str,
+    error_message: str,
+    error_status: int = 400,
+) -> Response:
+    manager = _manager()
+    method = getattr(manager, action)
+    if method():
+        return jsonify({"status": success_state})
+    response = jsonify({"error": error_message})
+    response.status_code = error_status
+    return response
+
+
+@api_bp.get("/health")
+def api_health() -> Response:
+    return jsonify({"status": "ok"})
+
+
+@api_bp.get("/defaults")
+def api_defaults() -> Response:
+    return jsonify(_manager().defaults())
+
+
+@api_bp.get("/state")
+def api_state() -> Response:
+    return jsonify(_manager().snapshot())
+
+
+@api_bp.post("/run")
+def api_start_run() -> Response:
+    manager = _manager()
+    payload = request.get_json(silent=True) or {}
+    try:
+        cfg = manager.start_run(payload)
+    except ValueError as exc:
+        response = jsonify({"error": str(exc)})
+        response.status_code = 400
+        return response
+    except RuntimeError as exc:
+        response = jsonify({"error": str(exc)})
+        response.status_code = 409
+        return response
+    return jsonify({"status": "started", "config": cfg})
+
+
+@api_bp.post("/pause")
+def api_pause() -> Response:
+    return _toggle_response("pause", "paused", "No active run to pause.")
+
+
+@api_bp.post("/resume")
+def api_resume() -> Response:
+    return _toggle_response("resume", "running", "No paused run to resume.")
+
+
+@api_bp.post("/cancel")
+def api_cancel() -> Response:
+    return _toggle_response("cancel", "cancelling", "No active run to cancel.")
+
+
+@api_bp.get("/events")
+def api_events() -> Response:
+    manager = _manager()
+
+    def generate() -> Any:
+        yield from manager.event_stream()
+
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["Connection"] = "keep-alive"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@frontend_bp.route("/", defaults={"path": ""})
+@frontend_bp.route("/<path:path>")
+def serve_frontend(path: str) -> Response:
+    dist_dir = Path(current_app.config["FRONTEND_DIST"])
+    if not dist_dir.exists():
+        response = jsonify(
+            {
+                "error": "Frontend assets not found.",
+                "hint": "Run `npm install && npm run build` inside webui/.",
+            }
+        )
+        response.status_code = 503
+        return response
+
+    if path and (dist_dir / path).is_file():
+        return send_from_directory(dist_dir, path)
+    return send_from_directory(dist_dir, "index.html")
 
 
 def create_app(config: Dict[str, Any] | None = None) -> Flask:
@@ -26,89 +128,9 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
     manager = JobManager(outdir=Path(app.config["RUNS_OUTDIR"]))
     app.config["JOB_MANAGER"] = manager
 
-    _register_routes(app)
+    app.register_blueprint(api_bp)
+    app.register_blueprint(frontend_bp)
     return app
-
-
-def _register_routes(app: Flask) -> None:
-    @app.get("/api/health")
-    def health() -> Response:
-        return jsonify({"status": "ok"})
-
-    @app.get("/api/defaults")
-    def defaults() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        return jsonify(manager.defaults())
-
-    @app.get("/api/state")
-    def state() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        return jsonify(manager.snapshot())
-
-    @app.post("/api/run")
-    def start_run() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        payload = request.get_json(silent=True) or {}
-        try:
-            cfg = manager.start_run(payload)
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
-        return jsonify({"status": "started", "config": cfg})
-
-    @app.post("/api/pause")
-    def pause_run() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        if manager.pause():
-            return jsonify({"status": "paused"})
-        return jsonify({"error": "No active run to pause."}), 400
-
-    @app.post("/api/resume")
-    def resume_run() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        if manager.resume():
-            return jsonify({"status": "running"})
-        return jsonify({"error": "No paused run to resume."}), 400
-
-    @app.post("/api/cancel")
-    def cancel_run() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-        if manager.cancel():
-            return jsonify({"status": "cancelling"})
-        return jsonify({"error": "No active run to cancel."}), 400
-
-    @app.get("/api/events")
-    def events() -> Response:
-        manager: JobManager = current_app.config["JOB_MANAGER"]
-
-        def generate() -> Any:
-            yield from manager.event_stream()
-
-        response = Response(generate(), mimetype="text/event-stream")
-        response.headers["Cache-Control"] = "no-cache"
-        response.headers["Connection"] = "keep-alive"
-        response.headers["X-Accel-Buffering"] = "no"
-        return response
-
-    @app.route("/", defaults={"path": ""})
-    @app.route("/<path:path>")
-    def serve_frontend(path: str) -> Response:
-        dist_dir = Path(current_app.config["FRONTEND_DIST"])
-        if not dist_dir.exists():
-            return (
-                jsonify(
-                    {
-                        "error": "Frontend assets not found.",
-                        "hint": "Run `npm install && npm run build` inside webui/.",
-                    }
-                ),
-                503,
-            )
-
-        if path and (dist_dir / path).is_file():
-            return send_from_directory(dist_dir, path)
-        return send_from_directory(dist_dir, "index.html")
 
 
 app = create_app()

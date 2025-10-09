@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
 
-# Use gevent-compatible primitives when running under gevent workers
-try:
-    from gevent.queue import Queue
-    from gevent.lock import RLock as Lock
-except ImportError:
-    from queue import Queue  # type: ignore
-    from threading import Lock  # type: ignore
+if TYPE_CHECKING:  # pragma: no cover - used for static analysis only
+    from queue import Empty as QueueEmptyType
+    from queue import Queue as QueueType
+    from threading import RLock as LockType
+else:  # pragma: no cover - runtime selection
+    try:
+        from gevent.queue import Empty as QueueEmptyType  # type: ignore[import-untyped]
+        from gevent.queue import Queue as QueueType  # type: ignore[import-untyped]
+        from gevent.lock import RLock as LockType  # type: ignore[import-untyped]
+    except ImportError:  # pragma: no cover - gevent not installed
+        from queue import Empty as QueueEmptyType
+        from queue import Queue as QueueType
+        from threading import RLock as LockType
 
 
 class SSEBroker:
@@ -19,8 +25,8 @@ class SSEBroker:
 
     def __init__(self, *, keepalive_s: float = 15.0) -> None:
         self._keepalive = keepalive_s
-        self._lock = Lock()
-        self._subscribers: List[Queue[Dict[str, Any]]] = []
+        self._lock = LockType()
+        self._subscribers: List[Any] = []
 
     def publish(self, event: Dict[str, Any]) -> None:
         """Publish a new event to all subscribers."""
@@ -33,9 +39,7 @@ class SSEBroker:
 
     def stream(self, initial: Optional[Iterable[Dict[str, Any]]] = None) -> Iterator[str]:
         """Yield formatted SSE data for a single subscriber."""
-        from queue import Empty  # Import Empty from the appropriate module
-
-        mailbox: Queue[Dict[str, Any]] = Queue()
+        mailbox: Any = QueueType()
         with self._lock:
             self._subscribers.append(mailbox)
 
@@ -47,7 +51,7 @@ class SSEBroker:
                 try:
                     event = mailbox.get(timeout=self._keepalive)
                     yield self._format(event)
-                except Empty:
+                except QueueEmptyType:
                     yield self._format({"type": "ping", "payload": {"ts": time_now_ms()}})
         except GeneratorExit:
             # Client disconnected - clean up gracefully
