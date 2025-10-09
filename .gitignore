@@ -54,6 +54,11 @@ uv.lock.bak
 # Generated artifacts
 results/
 
+# Frontend dependencies
+node_modules/
+webui/node_modules/
+
+
 # OS-level clutter
 .DS_Store
 Thumbs.db

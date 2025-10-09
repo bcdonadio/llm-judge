@@ -20,18 +20,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--models",
         nargs="+",
-        required=True,
-        help="OpenRouter model slugs to test (e.g., xai/grok-4-fast openai/gpt-4o-mini qwen/qwen-2.5-72b-instruct)",
+        default=["qwen/qwen3-next-80b-a3b-instruct"],
+        help=(
+            "OpenRouter model slugs to test (default: qwen/qwen3-next-80b-a3b-instruct). "
+            "Provide one or more slugs, e.g., qwen/qwen3-next-80b-a3b-instruct mistral/mistral-large-latest"
+        ),
     )
     parser.add_argument(
         "--judge-model",
-        default="openai/gpt-5-mini",
-        help="Judge model slug (default: openai/gpt-5-mini). Use any OpenRouter-accessible judge.",
-    )
-    parser.add_argument(
-        "--include-probes",
-        action="store_true",
-        help="Include diagnostic probes A-D",
+        default="x-ai/grok-4-fast",
+        help="Judge model slug (default: x-ai/grok-4-fast). Use any OpenRouter-accessible judge.",
     )
     parser.add_argument(
         "--outdir",
@@ -141,7 +139,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = RunnerConfig(
             models=args.models,
             judge_model=args.judge_model,
-            include_probes=args.include_probes,
             outdir=outdir,
             max_tokens=args.max_tokens,
             judge_max_tokens=args.judge_max_tokens,

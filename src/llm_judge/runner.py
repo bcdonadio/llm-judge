@@ -14,7 +14,7 @@ from colorama import Fore, Style
 
 from .api import openrouter_chat
 from .judging import judge_decide
-from .prompts import CORE_PROMPTS, FOLLOW_UP, PROBES
+from .prompts import CORE_PROMPTS, FOLLOW_UP
 from .utils import detect_refusal, extract_text, now_iso, safe_write_json
 
 LOGGER = logging.getLogger(__name__)
@@ -26,7 +26,6 @@ class RunnerConfig:
 
     models: Sequence[str]
     judge_model: str
-    include_probes: bool
     outdir: Path
     max_tokens: int
     judge_max_tokens: int
@@ -47,6 +46,26 @@ class RunArtifacts:
     summaries: Dict[str, List[Dict[str, Any]]]
 
 
+@dataclass(frozen=True)
+class RunnerEvent:
+    """Lightweight payload emitted during runner progress updates."""
+
+    type: str
+    payload: Dict[str, Any]
+
+
+class RunnerControl:
+    """Control hooks allowing external supervisors to pause or cancel runs."""
+
+    def wait_if_paused(self) -> None:
+        """Block while the runner is paused; default no-op."""
+        return None
+
+    def should_stop(self) -> bool:
+        """Return True when the run should halt early."""
+        return False
+
+
 class LLMJudgeRunner:
     """Object-oriented orchestration of the LLM judge workflow."""
 
@@ -54,12 +73,14 @@ class LLMJudgeRunner:
         self,
         config: RunnerConfig,
         *,
-        prompt_loader: Callable[[bool], Iterable[str]] | None = None,
+        prompt_loader: Callable[[], Iterable[str]] | None = None,
         chat_client: Callable[..., Dict[str, Any]] | None = None,
         judge_client: Callable[..., Dict[str, Any]] | None = None,
         now_provider: Callable[[], str] | None = None,
         sleep_func: Callable[[float], None] | None = None,
         logger: logging.Logger | None = None,
+        progress_callback: Callable[[RunnerEvent], None] | None = None,
+        control: RunnerControl | None = None,
     ) -> None:
         self.config = config
         self._prompt_loader = prompt_loader or self._default_prompt_loader
@@ -68,15 +89,15 @@ class LLMJudgeRunner:
         self._now = now_provider or now_iso
         self._sleep = sleep_func or time.sleep
         self._logger = logger or LOGGER
+        self._progress_callback = progress_callback
+        self._control = control or RunnerControl()
 
     # --------------------------------------------------------------------- #
     # Configuration helpers
 
     @staticmethod
-    def _default_prompt_loader(include_probes: bool) -> Iterable[str]:
+    def _default_prompt_loader() -> Iterable[str]:
         """Yield the configured prompt collection."""
-        if include_probes:
-            return CORE_PROMPTS + PROBES
         return CORE_PROMPTS
 
     # --------------------------------------------------------------------- #
@@ -151,6 +172,22 @@ class LLMJudgeRunner:
             )
 
     # --------------------------------------------------------------------- #
+    # Progress hooks
+
+    def _emit(self, event_type: str, **payload: Any) -> None:
+        if self._progress_callback is None:
+            return
+        safe_payload: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if isinstance(value, Path):
+                safe_payload[key] = str(value)
+            elif isinstance(value, Counter):
+                safe_payload[key] = dict(value)
+            else:
+                safe_payload[key] = value
+        self._progress_callback(RunnerEvent(type=event_type, payload=safe_payload))
+
+    # --------------------------------------------------------------------- #
     # Core execution helpers
 
     @staticmethod
@@ -211,16 +248,18 @@ class LLMJudgeRunner:
             }
         )
 
-    def _summaries_to_print(self, summary_data: Dict[str, List[Dict[str, Any]]]) -> List[str]:
-        lines: List[str] = []
+    def _summary_stats(self, summary_data: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+        stats: Dict[str, Dict[str, Any]] = {}
         for model, rows in summary_data.items():
             total = len(rows)
             ok_count = sum(1 for r in rows if r["ok"])
             fail_count = total - ok_count
+
             init_comps = [r["initial_comp"] for r in rows if r["initial_comp"] is not None]
             follow_comps = [r["follow_comp"] for r in rows if r["follow_comp"] is not None]
             avg_init = sum(init_comps) / len(init_comps) if init_comps else 0.0
             avg_follow = sum(follow_comps) / len(follow_comps) if follow_comps else 0.0
+
             init_refusal_rate = sum(1 for r in rows if r["initial_refusal"]) / total if total else 0.0
             follow_refusal_rate = sum(1 for r in rows if r["follow_refusal"]) / total if total else 0.0
 
@@ -228,6 +267,39 @@ class LLMJudgeRunner:
             follow_sources = _counter([r["follow_source"] for r in rows])
             asymmetry_counts = _counter([r["asymmetry"] for r in rows])
             errors = _counter([r["error"] for r in rows])
+
+            stats[model] = {
+                "total": total,
+                "ok": ok_count,
+                "issues": fail_count,
+                "avg_initial_completeness": avg_init,
+                "avg_followup_completeness": avg_follow,
+                "initial_refusal_rate": init_refusal_rate,
+                "followup_refusal_rate": follow_refusal_rate,
+                "initial_sourcing_counts": dict(init_sources),
+                "followup_sourcing_counts": dict(follow_sources),
+                "asymmetry_counts": dict(asymmetry_counts),
+                "error_counts": dict(errors),
+            }
+
+        return stats
+
+    def _summaries_to_print(self, summary_data: Dict[str, List[Dict[str, Any]]]) -> List[str]:
+        lines: List[str] = []
+        stats = self._summary_stats(summary_data)
+        for model, model_stats in stats.items():
+            total = model_stats["total"]
+            ok_count = model_stats["ok"]
+            fail_count = model_stats["issues"]
+            avg_init = model_stats["avg_initial_completeness"]
+            avg_follow = model_stats["avg_followup_completeness"]
+            init_refusal_rate = model_stats["initial_refusal_rate"]
+            follow_refusal_rate = model_stats["followup_refusal_rate"]
+
+            init_sources = Counter(model_stats["initial_sourcing_counts"])
+            follow_sources = Counter(model_stats["followup_sourcing_counts"])
+            asymmetry_counts = Counter(model_stats["asymmetry_counts"])
+            errors = Counter(model_stats["error_counts"])
 
             header = self._color(f"Model {model}", Fore.CYAN + Style.BRIGHT)
             lines.append(f"{header} • prompts {total} (ok {ok_count}, issues {fail_count})")
@@ -255,19 +327,26 @@ class LLMJudgeRunner:
 
     def run(self) -> RunArtifacts:
         """Execute the configured suite across all models."""
-        prompts = list(self._prompt_loader(self.config.include_probes))
+        prompts = list(self._prompt_loader())
         timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
         runs_dir = self.config.outdir / "runs" / timestamp
         runs_dir.mkdir(parents=True, exist_ok=True)
         csv_path = self.config.outdir / f"results_{timestamp}.csv"
 
+        self._emit(
+            "run_started",
+            models=list(self.config.models),
+            total_prompts=len(prompts),
+            limit=self.config.limit,
+            timestamp=timestamp,
+        )
+
         self._logger.debug(
-            "Prepared run directory at %s; models=%s total_prompts=%d include_probes=%s",
+            "Prepared run directory at %s; models=%s total_prompts=%d",
             runs_dir,
             list(self.config.models),
             len(prompts),
-            self.config.include_probes,
         )
 
         fieldnames = [
@@ -296,12 +375,17 @@ class LLMJudgeRunner:
         ]
 
         summary_data: Dict[str, List[Dict[str, Any]]] = {}
+        cancelled = False
 
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
 
             for model in self.config.models:
+                if self._control.should_stop():
+                    cancelled = True
+                    break
+
                 model_dir = runs_dir / str(model).replace("/", "_")
                 model_dir.mkdir(parents=True, exist_ok=True)
                 self._logger.debug("Processing model '%s' (%d prompts)", model, len(prompts))
@@ -309,10 +393,24 @@ class LLMJudgeRunner:
                 prompt_sequence = prompts if self.config.limit is None else prompts[: self.config.limit]
                 if self.config.limit is not None and self.config.limit < len(prompts):
                     self._logger.debug("Prompt limit applied (%d of %d prompts)", self.config.limit, len(prompts))
+                self._emit("model_started", model=model, total_prompts=len(prompt_sequence))
 
                 for idx, prompt in enumerate(prompt_sequence):
+                    self._control.wait_if_paused()
+                    if self._control.should_stop():
+                        cancelled = True
+                        break
+
                     metadata: Dict[str, str] = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
                     self._verbose_log_prompt(idx, prompt)
+                    self._emit(
+                        "message",
+                        model=model,
+                        prompt_index=idx,
+                        step="prompt",
+                        role="user",
+                        content=prompt,
+                    )
 
                     messages_initial = [{"role": "user", "content": prompt}]
                     text_initial, completion_initial = self._fetch_completion(
@@ -325,13 +423,35 @@ class LLMJudgeRunner:
                         idx,
                     )
                     self._verbose_log_response("Initial", text_initial)
+                    self._emit(
+                        "message",
+                        model=model,
+                        prompt_index=idx,
+                        step="initial",
+                        role="assistant",
+                        content=text_initial,
+                    )
 
                     messages_followup = [
                         {"role": "user", "content": prompt},
                         {"role": "assistant", "content": text_initial},
                         {"role": "user", "content": FOLLOW_UP},
                     ]
+                    self._emit(
+                        "message",
+                        model=model,
+                        prompt_index=idx,
+                        step="followup_prompt",
+                        role="user",
+                        content=FOLLOW_UP,
+                    )
+
+                    self._control.wait_if_paused()
                     self._sleep(self.config.sleep_s)
+                    if self._control.should_stop():
+                        cancelled = True
+                        break
+
                     text_follow, completion_follow = self._fetch_completion(
                         model,
                         messages_followup,
@@ -342,6 +462,14 @@ class LLMJudgeRunner:
                         idx,
                     )
                     self._verbose_log_response("Follow-up", text_follow)
+                    self._emit(
+                        "message",
+                        model=model,
+                        prompt_index=idx,
+                        step="followup",
+                        role="assistant",
+                        content=text_follow,
+                    )
 
                     initial_path = model_dir / f"{idx:02d}_initial.json"
                     follow_path = model_dir / f"{idx:02d}_followup.json"
@@ -351,7 +479,12 @@ class LLMJudgeRunner:
                     heur_refusal_initial = detect_refusal(text_initial)
                     heur_refusal_follow = detect_refusal(text_follow)
 
+                    self._control.wait_if_paused()
                     self._sleep(self.config.sleep_s)
+                    if self._control.should_stop():
+                        cancelled = True
+                        break
+
                     judge_result = self._judge_client(
                         judge_model=self.config.judge_model,
                         prompt=prompt,
@@ -378,6 +511,16 @@ class LLMJudgeRunner:
                     final_notes = notes_value if isinstance(notes_value, str) else ""
 
                     self._verbose_log_judge(judge_result, initial_decision, follow_decision, asymmetry, final_notes)
+                    self._emit(
+                        "judge",
+                        model=model,
+                        prompt_index=idx,
+                        asymmetry=asymmetry,
+                        notes=final_notes,
+                        decision=decision_dict,
+                        ok=bool(judge_result.get("ok")),
+                        error=judge_result.get("error"),
+                    )
 
                     writer.writerow(
                         {
@@ -417,8 +560,26 @@ class LLMJudgeRunner:
                     self._record_summary(
                         summary_data, model, judge_result, initial_decision, follow_decision, asymmetry
                     )
+                    snapshot = self._summary_stats(summary_data)
+                    self._emit("summary", summary=snapshot, model=model, prompt_index=idx)
 
+                    self._control.wait_if_paused()
                     self._sleep(self.config.sleep_s)
+                    if self._control.should_stop():
+                        cancelled = True
+                        break
+
+            if cancelled:
+                self._emit(
+                    "run_cancelled", csv_path=csv_path, runs_dir=runs_dir, summary=self._summary_stats(summary_data)
+                )
+            else:
+                self._emit(
+                    "run_completed",
+                    csv_path=csv_path,
+                    runs_dir=runs_dir,
+                    summary=self._summary_stats(summary_data),
+                )
 
         print(self._color(f"[OK] CSV: {csv_path}", Fore.GREEN + Style.BRIGHT))
         print(self._color(f"[OK] Raw JSON per-call under: {runs_dir}", Fore.GREEN + Style.BRIGHT))
@@ -446,7 +607,6 @@ def run_suite(
     *,
     models: Sequence[str],
     judge_model: str,
-    include_probes: bool,
     outdir: Path,
     max_tokens: int,
     judge_max_tokens: int,
@@ -461,7 +621,6 @@ def run_suite(
     config = RunnerConfig(
         models=models,
         judge_model=judge_model,
-        include_probes=include_probes,
         outdir=outdir,
         max_tokens=max_tokens,
         judge_max_tokens=judge_max_tokens,
@@ -476,4 +635,4 @@ def run_suite(
     return runner.run()
 
 
-__all__ = ["LLMJudgeRunner", "RunnerConfig", "RunArtifacts", "run_suite"]
+__all__ = ["LLMJudgeRunner", "RunnerConfig", "RunArtifacts", "RunnerEvent", "RunnerControl", "run_suite"]

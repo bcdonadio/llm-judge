@@ -22,7 +22,6 @@ def test_build_parser_parses_expected_arguments(tmp_path: Path) -> None:
             "model-b",
             "--judge-model",
             "judge-x",
-            "--include-probes",
             "--outdir",
             str(tmp_path),
             "--max-tokens",
@@ -42,7 +41,6 @@ def test_build_parser_parses_expected_arguments(tmp_path: Path) -> None:
     )
     assert args.models == ["model-a", "model-b"]
     assert args.judge_model == "judge-x"
-    assert args.include_probes is True
     assert Path(args.outdir) == tmp_path
     assert args.max_tokens == 1234
     assert args.judge_max_tokens == 4321

@@ -19,7 +19,6 @@ def build_config(
     tmp_path: Path,
     *,
     models: Iterable[str] = (),
-    include_probes: bool = False,
     limit: int | None = None,
     verbose: bool = False,
     use_color: bool = False,
@@ -27,7 +26,6 @@ def build_config(
     return RunnerConfig(
         models=list(models),
         judge_model="judge-model",
-        include_probes=include_probes,
         outdir=tmp_path,
         max_tokens=16,
         judge_max_tokens=32,
@@ -117,6 +115,9 @@ def test_summaries_and_recording(tmp_path: Path) -> None:
     assert any("Model model-a" in line for line in lines)
     assert any("Issues" in line for line in lines)
     assert any("n/a" in line for line in lines)
+    stats = runner._summary_stats(summary)
+    assert stats["model-a"]["total"] == 2
+    assert pytest.approx(stats["model-b"]["avg_initial_completeness"]) == 1.0
 
 
 def test_fetch_completion_success(tmp_path: Path) -> None:
@@ -158,10 +159,9 @@ def test_fetch_completion_handles_errors(tmp_path: Path) -> None:
 
 
 def test_default_prompt_loader_matches_configuration() -> None:
-    from llm_judge.prompts import CORE_PROMPTS, PROBES
+    from llm_judge.prompts import CORE_PROMPTS
 
-    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=False)) == CORE_PROMPTS
-    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=True)) == CORE_PROMPTS + PROBES
+    assert list(LLMJudgeRunner._default_prompt_loader()) == CORE_PROMPTS
 
 
 def test_ensure_dict_handles_non_dict(tmp_path: Path) -> None:
@@ -176,8 +176,7 @@ def test_run_creates_outputs(
 ) -> None:
     prompts = ["Prompt one", "Prompt two"]
 
-    def fake_prompts(include_probes: bool) -> List[str]:
-        assert include_probes is True
+    def fake_prompts() -> List[str]:
         return prompts
 
     def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
@@ -215,7 +214,6 @@ def test_run_creates_outputs(
     cfg = build_config(
         tmp_path,
         models=["model-x"],
-        include_probes=True,
         limit=1,
         verbose=True,
         use_color=True,
@@ -257,14 +255,14 @@ def test_run_creates_outputs(
 def test_run_handles_no_models(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts() -> List[str]:
         return ["Prompt"]
 
     def fake_sleep(_: float) -> None:
         return None
 
     runner = LLMJudgeRunner(
-        build_config(tmp_path, models=[], include_probes=False, verbose=False),
+        build_config(tmp_path, models=[], verbose=False),
         prompt_loader=fake_prompts,
         sleep_func=fake_sleep,
     )
@@ -276,7 +274,7 @@ def test_run_handles_no_models(
 def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prompts = ["Single"]
 
-    def fake_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts() -> List[str]:
         return prompts
 
     def fake_chat(*_: Any, **__: Any) -> Dict[str, Any]:
@@ -297,7 +295,7 @@ def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         return None
 
     runner = LLMJudgeRunner(
-        build_config(tmp_path, models=["model"], include_probes=False),
+        build_config(tmp_path, models=["model"]),
         prompt_loader=fake_prompts,
         chat_client=fake_chat,
         judge_client=fake_judge,
@@ -321,7 +319,6 @@ def test_run_suite_uses_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     artifacts = run_suite(
         models=["model"],
         judge_model="judge",
-        include_probes=False,
         outdir=tmp_path,
         max_tokens=8,
         judge_max_tokens=8,

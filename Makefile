@@ -1,8 +1,13 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook fmt-check-hook hooks
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook fmt-check-hook hooks web web-build
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
 PRECOMMIT_HOOK ?= .git/hooks/pre-commit
+WEBUI_NPM ?= npm
+GUNICORN ?= gunicorn
+GUNICORN_BIND ?= 0.0.0.0:5000
+GUNICORN_WORKERS ?= 1
+GUNICORN_WORKER_CONNECTIONS ?= 1000
 
 install: hooks
 	$(UV) sync --extra dev
@@ -67,3 +72,10 @@ test: type
 	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing
 
 check: fmt-check lint type test
+
+web-build:
+	cd webui && $(WEBUI_NPM) install
+	cd webui && $(WEBUI_NPM) run build
+
+web: web-build
+	$(GUNICORN) llm_judge.webapp:app --worker-class gevent --workers $(GUNICORN_WORKERS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --bind $(GUNICORN_BIND)
