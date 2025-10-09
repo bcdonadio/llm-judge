@@ -50,7 +50,7 @@ def api_state() -> Response:
 @api_bp.post("/run")
 def api_start_run() -> Response:
     manager = _manager()
-    payload = request.get_json(silent=True) or {}
+    payload: Dict[str, Any] = request.get_json(silent=True) or {}
     try:
         cfg = manager.start_run(payload)
     except ValueError as exc:

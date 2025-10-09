@@ -181,11 +181,49 @@ class ToggleControl:
         self._calls += 1
 
 
-def _setup_runner_for_cancel(
-    tmp_path: Path,
-) -> tuple[LLMJudgeRunner, ToggleControl, csv.DictWriter[Any], Dict[str, List[Dict[str, Any]]]]:
+def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
+    """Test cancellation after summary (line 557)."""
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    class StopAfterSummary:
+        def __init__(self) -> None:
+            self._sleep_count = 0
+
+        def wait_if_paused(self) -> None:
+            pass
+
+        def should_stop(self) -> bool:
+            # Stop after third sleep (after summary, line 557)
+            return self._sleep_count >= 3
+
+        def on_sleep(self) -> None:
+            self._sleep_count += 1
+
+    control = StopAfterSummary()
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.on_sleep()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
+
+
+def test_process_prompt_cancels_after_followup(tmp_path: Path) -> None:
+    """Test cancellation after followup prompt before followup response (line 450)."""
     runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
     control = ToggleControl()
+    control._calls = 1  # Will stop on next check (second sleep call)
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
     cast(Any, runner)._judge_client = _fake_judge_decision
@@ -202,11 +240,44 @@ def _setup_runner_for_cancel(
     writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
     writer.writeheader()
     summary: Dict[str, List[Dict[str, Any]]] = {}
-    return runner, control, writer, summary
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
 
 
-def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
-    runner, _, writer, summary = _setup_runner_for_cancel(tmp_path)
+def test_process_prompt_cancels_before_judge(tmp_path: Path) -> None:
+    """Test cancellation before judge call (line 480)."""
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    class StopBeforeJudge:
+        def __init__(self) -> None:
+            self._sleep_count = 0
+
+        def wait_if_paused(self) -> None:
+            pass
+
+        def should_stop(self) -> bool:
+            # Stop after second sleep (before judge, line 480)
+            return self._sleep_count >= 2
+
+        def on_sleep(self) -> None:
+            self._sleep_count += 1
+
+    control = StopBeforeJudge()
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.on_sleep()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
     assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
 
 

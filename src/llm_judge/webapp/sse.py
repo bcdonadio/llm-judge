@@ -39,7 +39,7 @@ class SSEBroker:
 
     def stream(self, initial: Optional[Iterable[Dict[str, Any]]] = None) -> Iterator[str]:
         """Yield formatted SSE data for a single subscriber."""
-        mailbox: Any = QueueType()
+        mailbox: QueueType[Dict[str, Any]] = QueueType()
         with self._lock:
             self._subscribers.append(mailbox)
 

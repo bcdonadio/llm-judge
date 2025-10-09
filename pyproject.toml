@@ -66,6 +66,7 @@ reportUnknownMemberType = "warning"
 reportUntypedFunctionDecorator = "warning"
 reportUntypedClassDecorator = "warning"
 reportUntypedNamedTuple = "warning"
+reportUnusedImport = "warning"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -88,4 +89,4 @@ concurrency = ["thread"]
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
-fail_under = 95
+fail_under = 100

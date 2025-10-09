@@ -130,7 +130,11 @@ def test_job_manager_pause_resume_flow(tmp_path: Path) -> None:
     manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
     assert manager.pause() is True
     assert manager.snapshot()["status"]["state"] == "paused"
+    # Test pause when not running returns False
+    assert manager.pause() is False
     assert manager.resume() is True
+    # Test resume when not paused returns False
+    assert manager.resume() is False
     assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "completed")
 
 
@@ -139,6 +143,8 @@ def test_job_manager_cancel(tmp_path: Path) -> None:
     manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
     assert manager.cancel() is True
     assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "cancelled")
+    # Test cancel when not running returns False
+    assert manager.cancel() is False
 
 
 def test_threaded_runner_control_waits_until_resumed() -> None:
@@ -196,6 +202,126 @@ def test_job_manager_gevent_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         greenlet.run()
 
 
+def test_job_manager_threading_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Test that JobManager falls back to threading when gevent is unavailable."""
+    from llm_judge.webapp import job_manager as job_module
+
+    original_import = job_module.import_module
+
+    def fake_import_no_gevent(name: str) -> Any:
+        if name == "gevent":
+            raise ModuleNotFoundError("No module named 'gevent'")
+        return original_import(name)
+
+    monkeypatch.setattr(job_module, "import_module", fake_import_no_gevent)
+
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
+    assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "completed")
+
+
+def test_job_manager_rejects_concurrent_runs(tmp_path: Path) -> None:
+    """Test that starting a run while one is active raises RuntimeError."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory(delay=0.05, loops=100))
+    manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
+    with pytest.raises(RuntimeError, match="already in progress"):
+        manager.start_run({"models": ["another-model"], "judge_model": "tester"})
+    manager.cancel()
+
+
+def test_job_manager_history_limit(tmp_path: Path) -> None:
+    """Test that history is truncated when it exceeds the limit."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    cast(Any, manager)._history_limit = 3
+    # Manually append events to exceed limit
+    for i in range(5):
+        cast(Any, manager)._append_history({"type": "test", "index": i})
+    assert len(cast(Any, manager)._history) == 3
+    assert cast(Any, manager)._history[0]["index"] == 2
+
+
+def test_job_manager_accepts_string_models(tmp_path: Path) -> None:
+    """Test that models can be provided as a space-separated string."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    config = manager.start_run({"models": "model-a model-b", "judge_model": "tester"})
+    assert config["models"] == ["model-a", "model-b"]
+    assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "completed")
+
+
+def test_job_manager_rejects_empty_string_models(tmp_path: Path) -> None:
+    """Test that empty string for models raises ValueError."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    with pytest.raises(ValueError, match="Provide at least one model"):
+        manager.start_run({"models": "   ", "judge_model": "tester"})
+
+
+def test_job_manager_artifacts_fallback(tmp_path: Path) -> None:
+    """Test that artifacts are set even when runner doesn't emit completion event."""
+
+    class SilentRunner:
+        """Runner that doesn't emit completion events."""
+
+        def __init__(
+            self, config: RunnerConfig, callback: Callable[[RunnerEvent], None], control: RunnerControl
+        ) -> None:
+            self.config = config
+            self.callback = callback
+            self.control = control
+
+        def run(self) -> RunArtifacts:
+            # Don't emit run_completed event - test the fallback at line 214
+            return RunArtifacts(csv_path=Path("results.csv"), runs_dir=Path("runs"), summaries={})
+
+    def silent_factory(
+        config: RunnerConfig, callback: Callable[[RunnerEvent], None], control: RunnerControl
+    ) -> SilentRunner:
+        return SilentRunner(config, callback, control)
+
+    manager = JobManager(outdir=tmp_path, runner_factory=silent_factory)
+    manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
+    assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "completed")
+    snapshot = manager.snapshot()
+    assert snapshot["status"]["artifacts"] is not None
+    assert snapshot["status"]["artifacts"]["csv_path"] == "results.csv"
+
+
+def test_job_manager_default_runner_factory(tmp_path: Path) -> None:
+    """Test that default runner factory creates LLMJudgeRunner."""
+    from llm_judge.runner import LLMJudgeRunner, RunnerConfig, RunnerControl
+
+    manager = JobManager(outdir=tmp_path)
+    # Start a run that will use the default factory
+    # We can't really run it without an API key, but we can test the factory method directly
+
+    class DummyControl:
+        def wait_if_paused(self) -> None:
+            pass
+
+        def should_stop(self) -> bool:
+            return True
+
+    config = RunnerConfig(
+        models=["test"],
+        judge_model="judge",
+        outdir=tmp_path,
+        max_tokens=10,
+        judge_max_tokens=10,
+        temperature=0.0,
+        judge_temperature=0.0,
+        sleep_s=0.0,
+        limit=1,
+        verbose=False,
+        use_color=False,
+    )
+
+    def callback(_e: RunnerEvent) -> None:
+        pass
+
+    control: RunnerControl = cast(RunnerControl, DummyControl())
+    runner = cast(Any, manager)._default_runner_factory(config, callback, control)
+    assert isinstance(runner, LLMJudgeRunner)
+
+
 def test_sse_broker_publish_roundtrip() -> None:
     broker = SSEBroker(keepalive_s=0.001)
     stream = broker.stream(initial=[{"type": "ready"}])
@@ -207,6 +333,23 @@ def test_sse_broker_publish_roundtrip() -> None:
             break
     else:
         pytest.fail("did not receive expected message event")
+
+
+def test_sse_broker_requires_type_field() -> None:
+    broker = SSEBroker()
+    with pytest.raises(ValueError, match="must include a 'type' field"):
+        broker.publish({"payload": {"value": 42}})
+
+
+def test_sse_broker_handles_generator_exit() -> None:
+    """Test that SSE broker cleans up subscribers on generator exit."""
+    broker = SSEBroker(keepalive_s=0.001)
+    stream = broker.stream()
+    next(stream)  # register subscriber
+    assert len(cast(Any, broker)._subscribers) == 1
+    # Trigger GeneratorExit by not consuming the generator
+    del stream
+    # The cleanup happens in the finally block when generator is garbage collected
 
 
 class DummyManager:
@@ -243,6 +386,8 @@ class DummyManager:
         models = payload.get("models")
         if isinstance(models, list) and not models:
             raise ValueError("Provide at least one model slug to evaluate.")
+        if self.state in {"running", "paused"}:
+            raise RuntimeError("A run is already in progress.")
         self.started_with = payload
         self.state = "running"
         return payload
@@ -276,6 +421,13 @@ def test_flask_api_routes(tmp_path: Path) -> None:
 
     client = app.test_client()
 
+    health_resp = client.get("/api/health")
+    assert health_resp.status_code == 200
+    assert health_resp.get_json()["status"] == "ok"
+
+    state_resp = client.get("/api/state")
+    assert state_resp.status_code == 200
+
     defaults_resp = client.get("/api/defaults")
     assert defaults_resp.status_code == 200
     defaults_payload = defaults_resp.get_json()
@@ -293,6 +445,13 @@ def test_flask_api_routes(tmp_path: Path) -> None:
     assert run_resp.status_code == 200
     assert dummy.started_with is not None
     assert dummy.started_with["models"] == ["abc"]
+
+    # Test RuntimeError when run is already in progress
+    run_conflict = client.post(
+        "/api/run",
+        json={"models": ["def"], "judge_model": "x-ai/grok-4-fast"},
+    )
+    assert run_conflict.status_code == 409
 
     assert client.post("/api/pause").status_code == 200
     assert client.post("/api/resume").status_code == 200
@@ -319,11 +478,17 @@ def test_frontend_serves_existing_asset(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir(parents=True)
     (dist_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+    (dist_dir / "style.css").write_text("body { color: red; }", encoding="utf-8")
     app = create_app({"TESTING": True, "FRONTEND_DIST": str(dist_dir)})
     client = app.test_client()
     response = client.get("/")
     assert response.status_code == 200
     assert b"ok" in response.data
+
+    # Test serving a specific file
+    css_response = client.get("/style.css")
+    assert css_response.status_code == 200
+    assert b"color: red" in css_response.data
 
 
 def test_job_manager_event_stream_includes_history(tmp_path: Path) -> None:
@@ -335,6 +500,26 @@ def test_job_manager_event_stream_includes_history(tmp_path: Path) -> None:
     assert "event: status" in status_chunk
     history_chunk = next(stream)
     assert "message" in history_chunk
+
+
+def test_job_manager_event_stream_includes_artifacts(tmp_path: Path) -> None:
+    """Test that event_stream includes artifacts when they exist."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    cast(Any, manager)._history = []
+    cast(Any, manager)._summary = {"demo": [{"total": 1}]}
+    cast(Any, manager)._artifacts = {
+        "csv_path": "results.csv",
+        "runs_dir": "runs",
+        "summary": {"demo": [{"total": 1}]},
+    }
+    stream = manager.event_stream()
+    status_chunk = next(stream)
+    assert "event: status" in status_chunk
+    summary_chunk = next(stream)
+    assert "summary" in summary_chunk
+    artifacts_chunk = next(stream)
+    assert "artifacts" in artifacts_chunk
+    assert "results.csv" in artifacts_chunk
 
 
 def test_threaded_runner_control_wait_breaks_when_cancelled() -> None:

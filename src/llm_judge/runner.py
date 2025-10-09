@@ -321,10 +321,10 @@ class LLMJudgeRunner:
             init_refusal_rate = model_stats["initial_refusal_rate"]
             follow_refusal_rate = model_stats["followup_refusal_rate"]
 
-            init_sources = Counter(model_stats["initial_sourcing_counts"])
-            follow_sources = Counter(model_stats["followup_sourcing_counts"])
-            asymmetry_counts = Counter(model_stats["asymmetry_counts"])
-            errors = Counter(model_stats["error_counts"])
+            init_sources: Counter[str] = Counter(model_stats["initial_sourcing_counts"])
+            follow_sources: Counter[str] = Counter(model_stats["followup_sourcing_counts"])
+            asymmetry_counts: Counter[str] = Counter(model_stats["asymmetry_counts"])
+            errors: Counter[str] = Counter(model_stats["error_counts"])
 
             header = self._color(f"Model {model}", Fore.CYAN + Style.BRIGHT)
             lines.append(f"{header} • prompts {total} (ok {ok_count}, issues {fail_count})")
