@@ -31,7 +31,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Set up uv
         if: ${{ env.ACT != 'true' }}
@@ -39,7 +39,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-          cache-suffix: "linux-${{ runner.arch }}-py311"
+          cache-suffix: "linux-${{ runner.arch }}-py313"
 
       - name: Set up uv (act compatibility)
         if: ${{ env.ACT == 'true' }}
@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@v4.3.0
         with:
           path: .venv
-          key: uv-venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
+          key: uv-venv-${{ runner.os }}-py313-${{ hashFiles('uv.lock') }}
 
       - name: Install dependencies
         run: make install
@@ -82,7 +82,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: webui/package-lock.json
 
       - name: Set up uv
         if: ${{ env.ACT != 'true' }}
@@ -90,7 +97,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-          cache-suffix: "linux-${{ runner.arch }}-py311"
+          cache-suffix: "linux-${{ runner.arch }}-py313"
 
       - name: Set up uv (act compatibility)
         if: ${{ env.ACT == 'true' }}
@@ -102,7 +109,7 @@ jobs:
         uses: actions/cache@v4.3.0
         with:
           path: .venv
-          key: uv-venv-${{ runner.os }}-py311-${{ hashFiles('uv.lock') }}
+          key: uv-venv-${{ runner.os }}-py313-${{ hashFiles('uv.lock') }}
 
       - name: Install dependencies
         run: make install
@@ -110,12 +117,7 @@ jobs:
       - name: Run tests
         id: pytest
         continue-on-error: true
-        run: |
-          uv run --extra dev pytest -n auto \
-            --cov=llm_judge \
-            --cov-report=term-missing \
-            --cov-report=json:coverage.json \
-            --junitxml=pytest-results.xml
+        run: make test
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
@@ -123,8 +125,10 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          files: coverage.json
-          flags: pytest
+          files: |
+            coverage.json
+            webui/coverage/lcov.info
+          flags: pytest,vitest
           disable_search: true
           fail_ci_if_error: true
 
@@ -143,6 +147,7 @@ jobs:
           path: |
             pytest-results.xml
             coverage.json
+            webui/coverage/lcov.info
 
       - name: Publish workflow summary
         if: always()

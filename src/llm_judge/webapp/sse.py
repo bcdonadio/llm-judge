@@ -11,13 +11,19 @@ if TYPE_CHECKING:  # pragma: no cover - used for static analysis only
     from threading import RLock as LockType
 else:  # pragma: no cover - runtime selection
     try:
-        from gevent.queue import Empty as QueueEmptyType  # type: ignore[import-untyped]
-        from gevent.queue import Queue as QueueType  # type: ignore[import-untyped]
-        from gevent.lock import RLock as LockType  # type: ignore[import-untyped]
+        import gevent.queue  # type: ignore[import-untyped]
+        import gevent.lock  # type: ignore[import-untyped]
+
+        QueueEmptyType = gevent.queue.Empty  # type: ignore[misc]
+        QueueType = gevent.queue.Queue  # type: ignore[misc]
+        LockType = gevent.lock.RLock  # type: ignore[misc]
     except ImportError:  # pragma: no cover - gevent not installed
-        from queue import Empty as QueueEmptyType
-        from queue import Queue as QueueType
-        from threading import RLock as LockType
+        import queue
+        import threading
+
+        QueueEmptyType = queue.Empty
+        QueueType = queue.Queue
+        LockType = threading.RLock
 
 
 class SSEBroker:

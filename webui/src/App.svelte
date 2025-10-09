@@ -53,7 +53,7 @@ onMount(() => {
     {/if}
     {#if !loaded}
       <div class="loading-overlay">
-        <div class="spinner" />
+        <div class="spinner"></div>
         <p>Loading dashboard…</p>
       </div>
     {/if}

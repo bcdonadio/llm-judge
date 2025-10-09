@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test install gitleaks-hook fmt-check-hook hooks web web-build
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -11,6 +11,11 @@ GUNICORN_WORKER_CONNECTIONS ?= 1000
 
 install: hooks
 	$(UV) sync --extra dev
+	@if [ -n "$$CI" ]; then \
+		cd webui && $(WEBUI_NPM) ci; \
+	else \
+		cd webui && $(WEBUI_NPM) install; \
+	fi
 
 hooks: gitleaks-hook fmt-check-hook
 
@@ -68,8 +73,16 @@ type-mypy:
 type-pyright:
 	$(UV_RUN) pyright
 
-test: type
-	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing
+test: type webui-test
+	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing --cov-report=json:coverage.json --junitxml=pytest-results.xml
+
+webui-test:
+	@if [ -n "$$CI" ]; then \
+		cd webui && $(WEBUI_NPM) ci; \
+	else \
+		cd webui && $(WEBUI_NPM) install; \
+	fi
+	cd webui && $(WEBUI_NPM) run test
 
 check: fmt-check lint type test
 

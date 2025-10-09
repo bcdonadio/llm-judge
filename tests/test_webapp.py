@@ -450,7 +450,7 @@ def test_flask_api_routes(tmp_path: Path) -> None:
 
     run_error = client.post("/api/run", json={"models": [], "judge_model": "x-ai/grok-4-fast"})
     assert run_error.status_code == 400
-    assert "Provide at least one model" in run_error.get_json()["error"]
+    assert "Invalid configuration provided" in run_error.get_json()["error"]
 
     run_resp = client.post(
         "/api/run",
