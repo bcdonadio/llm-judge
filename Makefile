@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -9,6 +9,12 @@ GUNICORN_BIND ?= 0.0.0.0:5000
 GUNICORN_WORKERS ?= 1
 GUNICORN_WORKER_CONNECTIONS ?= 1000
 GUNICORN_PID_FILE ?= .gunicorn-web.pid
+DEVSTACK ?= $(UV_RUN) python -m llm_judge.devstack
+DEVSTACK_BACKEND_HOST ?= 127.0.0.1
+DEVSTACK_BACKEND_PORT ?= 5000
+DEVSTACK_FRONTEND_HOST ?= 127.0.0.1
+DEVSTACK_FRONTEND_PORT ?= 5173
+DEVSTACK_LOG_DIR ?= .devstack
 
 install: hooks
 	$(UV) sync --extra dev
@@ -106,3 +112,22 @@ webd: web-build
 		URL=$$(echo "$(GUNICORN_BIND)" | sed 's/^0\.0\.0\.0/127.0.0.1/'); \
 		echo "Web dashboard available at http://$$URL/"; \
 		echo "Stop it with 'kill $$PID'."
+
+webdev:
+	@trap 'kill 0' EXIT INT TERM; \
+	PYTHONUNBUFFERED=1 $(UV_RUN) flask --app llm_judge.webapp:create_app run --debug --host 0.0.0.0 --port 5000 & \
+	cd webui && $(WEBUI_NPM) install && $(WEBUI_NPM) run dev -- --host 0.0.0.0 --port 5173
+
+devstack-start:
+	$(DEVSTACK) start \
+		--backend-host $(DEVSTACK_BACKEND_HOST) \
+		--backend-port $(DEVSTACK_BACKEND_PORT) \
+		--frontend-host $(DEVSTACK_FRONTEND_HOST) \
+		--frontend-port $(DEVSTACK_FRONTEND_PORT) \
+		--log-dir $(DEVSTACK_LOG_DIR)
+
+devstack-stop:
+	$(DEVSTACK) stop $(if $(FORCE),--force,)
+
+devstack-status:
+	$(DEVSTACK) status

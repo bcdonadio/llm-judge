@@ -66,6 +66,16 @@ make test    # Pytest suite
 make check   # run lint + type + test
 ```
 
+### Development stack
+
+For iterative work on the Flask API and Svelte web UI with live reload, use the background dev stack manager:
+
+```bash
+make devstack-start
+```
+
+It launches both servers, writes logs under `.devstack/`, and prints the URLs plus controller PID. You can inspect progress at any time with `make devstack-status` and stop everything—including child processes spawned by the reloaders—with `make devstack-stop` (set `FORCE=1` to escalate to `SIGKILL`). The controller PID can also be terminated directly via `kill -- -<pid>` to tear down the whole process group.
+
 ## Project Layout
 
 - `judge.py` – CLI entry point.

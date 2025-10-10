@@ -54,6 +54,13 @@ The `llm-judge` project evaluates how language models respond to a politically s
 
 ## Development Workflow
 
+- **IMPORTANT — Canonical Live Test Loop:** Agents must use the managed dev stack when validating UI/API changes.
+  1. Start the stack with `make devstack-start`. Record the printed controller PID and endpoints.
+  2. Tail `.devstack/frontend.log` and `.devstack/backend.log` (e.g. `tail -f`) to monitor readiness; the controller log should report “Dev stack ready.”
+  3. Use the Playwright MCP tooling to open `http://127.0.0.1:5173`, trigger actions (e.g. click **Run**), and confirm the corresponding HTTP calls appear in `backend.log`.
+  4. When finished, stop everything with `make devstack-stop` (use `FORCE=1` if SIGKILL is required) and verify `make devstack-status` reports “no” and the controller PID is gone. This ensures no orphaned reloaders remain.
+  5. Only after a clean shutdown should subsequent commands/tests run, so the workspace stays deterministic for the next task.
+
 - Install dependencies with `make install` (uv extra `dev`).
 - Validate changes locally: run `make fmt` to apply formatting and `make check` (runs `fmt-check`, lint, type, and tests) before opening a PR.
 - Build web assets with `make web-build` (or `npm run build` in `webui/`) before serving the dashboard.

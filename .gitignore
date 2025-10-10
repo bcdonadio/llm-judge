@@ -48,6 +48,7 @@ tmp-test/
 
 # Tooling outputs
 uv.lock.bak
+.devstack/
 
 # Runtime logs & temp files
 *.log
