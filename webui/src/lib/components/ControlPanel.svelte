@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cancelRun, defaultsStore, isActiveState, pauseRun, resumeRun, startRun, statusStore } from '@/lib/stores';
+  import { parseLimit, parseModels } from './control-panel-helpers';
   import type { RunConfig, RunState } from '@/lib/types';
 
   const baseConfig: RunConfig = {
@@ -46,22 +47,6 @@
         message = '';
       }, 5000);
     }
-  }
-
-  function parseModels(raw: string): string[] {
-    return raw
-      .split(/[\s,]+/)
-      .map((value) => value.trim())
-      .filter(Boolean);
-  }
-
-  function parseLimit(raw: string | number): number | null {
-    const str = String(raw).trim();
-    if (!str) {
-      return null;
-    }
-    const parsed = Number.parseInt(str, 10);
-    return Number.isNaN(parsed) ? null : parsed;
   }
 
   async function handleRun() {
@@ -113,6 +98,8 @@
     }
     showMessage('Cancellation requested.');
   }
+
+  export { parseModels, parseLimit } from './control-panel-helpers';
 </script>
 
 <section class="control-panel">
