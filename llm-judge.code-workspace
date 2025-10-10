@@ -4,5 +4,83 @@
 			"path": "."
 		}
 	],
-	"settings": {}
+	"settings": {
+		"devstack.backendHost": "127.0.0.1",
+		"devstack.backendPort": "5000",
+		"devstack.frontendHost": "127.0.0.1",
+		"devstack.frontendPort": "5173",
+		"devstack.logDir": ".devstack",
+		"devstack.pidFile": ".devstack/devstack.pid",
+		"devstack.stateFile": ".devstack/state.json",
+		"devstack.controllerLog": ".devstack/controller.log",
+		"devstack.backendLog": ".devstack/backend.log",
+		"devstack.frontendLog": ".devstack/frontend.log"
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Devstack: Start",
+				"type": "shell",
+				"command": "make devstack-start",
+				"problemMatcher": [],
+				"detail": "Launches the Flask + Vite dev stack using the managed controller."
+			},
+			{
+				"label": "Devstack: Stop",
+				"type": "shell",
+				"command": "make devstack-stop",
+				"problemMatcher": [],
+				"detail": "Stops the managed dev stack (and its process group)."
+			}
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Devstack: Debug Serve",
+				"type": "python",
+				"request": "launch",
+				"module": "llm_judge.devstack",
+				"args": [
+					"serve",
+					"--backend-host",
+					"${config:devstack.backendHost}",
+					"--backend-port",
+					"${config:devstack.backendPort}",
+					"--frontend-host",
+					"${config:devstack.frontendHost}",
+					"--frontend-port",
+					"${config:devstack.frontendPort}",
+					"--log-dir",
+					"${config:devstack.logDir}",
+					"--pid-file",
+					"${config:devstack.pidFile}",
+					"--state-file",
+					"${config:devstack.stateFile}",
+					"--controller-log",
+					"${config:devstack.controllerLog}",
+					"--backend-log",
+					"${config:devstack.backendLog}",
+					"--frontend-log",
+					"${config:devstack.frontendLog}"
+				],
+				"justMyCode": false,
+				"console": "integratedTerminal",
+				"env": {
+					"PYTHONUNBUFFERED": "1"
+				},
+				"postDebugTask": "Devstack: Stop"
+			}
+		],
+		"compounds": [
+			{
+				"name": "Devstack: Start + Attach",
+				"configurations": [
+					"Devstack: Debug Serve"
+				]
+			}
+		]
+	}
 }
