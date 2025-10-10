@@ -1,0 +1,69 @@
+:root {
+  color-scheme: dark;
+  --color-bg: #0f141b;
+  --color-panel: #15252b;
+  --color-accent: #2dccca;
+  --color-muted: #46555d;
+  --color-border: #2a3a40;
+  --color-text: #ecf1f4;
+  --color-text-muted: #c6cfd7;
+  --color-judge: #f4be4f;
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, rgba(45, 204, 202, 0.35), transparent 45%), var(--color-bg);
+  color: var(--color-text);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: rgba(21, 37, 43, 0.75);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(45, 204, 202, 0.25);
+}
+
+button {
+  border: none;
+  border-radius: 999px;
+  padding: 0.5rem 1.25rem;
+  background: linear-gradient(135deg, var(--color-accent), rgba(45, 204, 202, 0.6));
+  color: var(--color-bg);
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(45, 204, 202, 0.25);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

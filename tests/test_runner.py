@@ -5,21 +5,58 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 import pytest
 
-from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, run_suite
+from llm_judge.runner import (
+    CSV_FIELDNAMES,
+    LLMJudgeRunner,
+    RunArtifacts,
+    RunnerConfig,
+    RunnerControl,
+    RunnerEvent,
+    run_suite,
+)
+
+
+def _fake_fetch_completion(*_: Any, **__: Any) -> tuple[str, Dict[str, Any]]:
+    return "text", {"choices": [{"message": {"content": "text"}}]}
+
+
+def _fake_judge_decision(**_: Any) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "decision": {
+            "initial": {"refusal": False, "completeness": 1, "sourcing_quality": ""},
+            "followup": {"refusal": False, "completeness": 1, "sourcing_quality": ""},
+            "asymmetry_leading": "none",
+            "final_notes": "",
+        },
+    }
+
+
+def _fake_now() -> str:
+    return "now"
+
+
+def _noop_emit(event_type: str, **payload: Any) -> None:
+    return None
+
+
+def _noop(*args: Any, **kwargs: Any) -> None:
+    return None
 
 
 def build_config(
     tmp_path: Path,
     *,
     models: Iterable[str] = (),
-    include_probes: bool = False,
     limit: int | None = None,
     verbose: bool = False,
     use_color: bool = False,
@@ -27,7 +64,6 @@ def build_config(
     return RunnerConfig(
         models=list(models),
         judge_model="judge-model",
-        include_probes=include_probes,
         outdir=tmp_path,
         max_tokens=16,
         judge_max_tokens=32,
@@ -38,6 +74,235 @@ def build_config(
         verbose=verbose,
         use_color=use_color,
     )
+
+
+def test_emit_normalises_payload(tmp_path: Path) -> None:
+    events: List[RunnerEvent] = []
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]), progress_callback=events.append)
+    sample_path = tmp_path / "file.json"
+    runner._emit("sample", path=sample_path, counts=Counter({"x": 2}), note="ok")
+    assert events and events[0].payload["path"] == str(sample_path)
+    assert events[0].payload["counts"] == {"x": 2}
+
+
+def test_limited_prompts_respects_limit(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=1))
+    prompts = runner._limited_prompts(["p1", "p2"])
+    assert prompts == ["p1"]
+
+
+def test_limited_prompts_logs_when_truncated(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=1))
+    caplog.set_level(logging.DEBUG, logger="llm_judge.runner")
+    runner._limited_prompts(["p1", "p2"])
+    assert any("Prompt limit applied" in message for message in caplog.messages)
+
+
+def test_limited_prompts_no_log_when_not_truncated(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], limit=2))
+    caplog.set_level(logging.DEBUG, logger="llm_judge.runner")
+    runner._limited_prompts(["p1", "p2"])
+    assert not any("Prompt limit applied" in message for message in caplog.messages)
+
+
+class ImmediateStopControl:
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return True
+
+
+def test_process_models_halts_when_control_requests(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, ImmediateStopControl())
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_models(["prompt"], tmp_path, writer, {})
+    assert cancelled is True
+
+
+def test_process_models_stops_when_prompt_cancels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    def fake_process_single(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(runner, "_process_single_model", fake_process_single)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_models(["prompt"], tmp_path, writer, {})
+    assert cancelled is True
+
+
+def test_process_prompt_stops_immediately(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, ImmediateStopControl())
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, {}) is True
+
+
+class StopAfterSleepControl:
+    def __init__(self) -> None:
+        self._stop = False
+
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return self._stop
+
+    def trigger(self) -> None:
+        self._stop = True
+
+
+def test_sleep_with_stop_triggers_cancel(tmp_path: Path) -> None:
+    control = StopAfterSleepControl()
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    runner._control = cast(RunnerControl, control)
+
+    def fake_sleep(_: float) -> None:
+        control.trigger()
+
+    runner._sleep = fake_sleep
+    assert runner._sleep_with_stop() is True
+
+
+class ToggleControl:
+    def __init__(self) -> None:
+        self._stop = False
+        self._calls = 0
+
+    def wait_if_paused(self) -> None:
+        return None
+
+    def should_stop(self) -> bool:
+        return self._stop
+
+    def advance(self) -> None:
+        if self._calls >= 1:
+            self._stop = True
+        self._calls += 1
+
+
+def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
+    """Test cancellation after summary (line 557)."""
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    class StopAfterSummary:
+        def __init__(self) -> None:
+            self._sleep_count = 0
+
+        def wait_if_paused(self) -> None:
+            pass
+
+        def should_stop(self) -> bool:
+            # Stop after third sleep (after summary, line 557)
+            return self._sleep_count >= 3
+
+        def on_sleep(self) -> None:
+            self._sleep_count += 1
+
+    control = StopAfterSummary()
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.on_sleep()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
+
+
+def test_process_prompt_cancels_after_followup(tmp_path: Path) -> None:
+    """Test cancellation after followup prompt before followup response (line 450)."""
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+    control = ToggleControl()
+    control._calls = 1  # Will stop on next check (second sleep call)
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.advance()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
+
+
+def test_process_prompt_cancels_before_judge(tmp_path: Path) -> None:
+    """Test cancellation before judge call (line 480)."""
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    class StopBeforeJudge:
+        def __init__(self) -> None:
+            self._sleep_count = 0
+
+        def wait_if_paused(self) -> None:
+            pass
+
+        def should_stop(self) -> bool:
+            # Stop after second sleep (before judge, line 480)
+            return self._sleep_count >= 2
+
+        def on_sleep(self) -> None:
+            self._sleep_count += 1
+
+    control = StopBeforeJudge()
+    runner._control = cast(RunnerControl, control)
+    cast(Any, runner)._fetch_completion = _fake_fetch_completion
+    cast(Any, runner)._judge_client = _fake_judge_decision
+    cast(Any, runner)._now = _fake_now
+    cast(Any, runner)._emit = _noop_emit
+    cast(Any, runner)._verbose_log_prompt = _noop
+    cast(Any, runner)._verbose_log_response = _noop
+    cast(Any, runner)._verbose_log_judge = _noop
+
+    def fake_sleep(_: float) -> None:
+        control.on_sleep()
+
+    runner._sleep = fake_sleep
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    summary: Dict[str, List[Dict[str, Any]]] = {}
+    assert runner._process_prompt("model", tmp_path, 0, "prompt", writer, summary) is True
+
+
+def test_process_single_model_breaks_on_prompt_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]))
+
+    def passthrough(prompts: Sequence[str]) -> Sequence[str]:
+        return prompts
+
+    def stop_prompt(*_: Any, **__: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(runner, "_limited_prompts", passthrough)
+    monkeypatch.setattr(runner, "_process_prompt", stop_prompt)
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    cancelled = runner._process_single_model("model", ["prompt"], tmp_path, writer, {})
+    assert cancelled is True
 
 
 def test_snippet_behaviour() -> None:
@@ -117,6 +382,9 @@ def test_summaries_and_recording(tmp_path: Path) -> None:
     assert any("Model model-a" in line for line in lines)
     assert any("Issues" in line for line in lines)
     assert any("n/a" in line for line in lines)
+    stats = runner._summary_stats(summary)
+    assert stats["model-a"]["total"] == 2
+    assert pytest.approx(stats["model-b"]["avg_initial_completeness"]) == 1.0
 
 
 def test_fetch_completion_success(tmp_path: Path) -> None:
@@ -158,10 +426,9 @@ def test_fetch_completion_handles_errors(tmp_path: Path) -> None:
 
 
 def test_default_prompt_loader_matches_configuration() -> None:
-    from llm_judge.prompts import CORE_PROMPTS, PROBES
+    from llm_judge.prompts import CORE_PROMPTS
 
-    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=False)) == CORE_PROMPTS
-    assert list(LLMJudgeRunner._default_prompt_loader(include_probes=True)) == CORE_PROMPTS + PROBES
+    assert list(LLMJudgeRunner._default_prompt_loader()) == CORE_PROMPTS
 
 
 def test_ensure_dict_handles_non_dict(tmp_path: Path) -> None:
@@ -176,8 +443,7 @@ def test_run_creates_outputs(
 ) -> None:
     prompts = ["Prompt one", "Prompt two"]
 
-    def fake_prompts(include_probes: bool) -> List[str]:
-        assert include_probes is True
+    def fake_prompts() -> List[str]:
         return prompts
 
     def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
@@ -215,7 +481,6 @@ def test_run_creates_outputs(
     cfg = build_config(
         tmp_path,
         models=["model-x"],
-        include_probes=True,
         limit=1,
         verbose=True,
         use_color=True,
@@ -257,14 +522,14 @@ def test_run_creates_outputs(
 def test_run_handles_no_models(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts() -> List[str]:
         return ["Prompt"]
 
     def fake_sleep(_: float) -> None:
         return None
 
     runner = LLMJudgeRunner(
-        build_config(tmp_path, models=[], include_probes=False, verbose=False),
+        build_config(tmp_path, models=[], verbose=False),
         prompt_loader=fake_prompts,
         sleep_func=fake_sleep,
     )
@@ -276,7 +541,7 @@ def test_run_handles_no_models(
 def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     prompts = ["Single"]
 
-    def fake_prompts(include_probes: bool) -> List[str]:
+    def fake_prompts() -> List[str]:
         return prompts
 
     def fake_chat(*_: Any, **__: Any) -> Dict[str, Any]:
@@ -297,7 +562,7 @@ def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         return None
 
     runner = LLMJudgeRunner(
-        build_config(tmp_path, models=["model"], include_probes=False),
+        build_config(tmp_path, models=["model"]),
         prompt_loader=fake_prompts,
         chat_client=fake_chat,
         judge_client=fake_judge,
@@ -321,7 +586,6 @@ def test_run_suite_uses_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     artifacts = run_suite(
         models=["model"],
         judge_model="judge",
-        include_probes=False,
         outdir=tmp_path,
         max_tokens=8,
         judge_max_tokens=8,

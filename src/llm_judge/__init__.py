@@ -10,7 +10,8 @@ from .judging import (
     judge_decide,
 )
 from .prompts import CORE_PROMPTS, FOLLOW_UP, PROBES
-from .runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, run_suite
+from .runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent, run_suite
+from .webapp import create_app, app as web_app
 from .utils import detect_refusal, extract_text, now_iso, safe_write_json
 
 __all__ = [
@@ -27,8 +28,12 @@ __all__ = [
     "LLMJudgeRunner",
     "RunArtifacts",
     "RunnerConfig",
+    "RunnerControl",
+    "RunnerEvent",
     "openrouter_chat",
     "run_suite",
     "safe_write_json",
     "judge_decide",
+    "create_app",
+    "web_app",
 ]

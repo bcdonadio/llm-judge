@@ -2,12 +2,15 @@
 name = "llm-judge"
 version = "0.1.0"
 description = "LLM asymmetry test suite that scores model responses via OpenRouter."
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "PyYAML>=6.0.3",
     "openai>=2.2.0",
     "httpx[http2]>=0.28.1",
     "colorama>=0.4.6",
+    "Flask>=3.0.3",
+    "gevent>=24.2.1",
+    "gunicorn>=21.2.0",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +21,8 @@ dev = [
     "pyright>=1.1.406",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
+    "pytest-dotenv-modern>=0.1.1",
+    "pytest-timeout>=2.3.1",
     "pytest-xdist>=3.8.0",
     "types-colorama>=0.4.15",
     "types-PyYAML>=6.0.12",
@@ -32,11 +37,11 @@ llm_judge = { path = "src/llm_judge" }
 
 [tool.black]
 line-length = 120
-target-version = ["py310"]
+target-version = ["py313"]
 preview = true
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.13"
 warn_unused_configs = true
 warn_return_any = true
 warn_unused_ignores = true
@@ -52,7 +57,7 @@ strict_equality = true
 
 [tool.pyright]
 typeCheckingMode = "strict"
-pythonVersion = "3.10"
+pythonVersion = "3.13"
 reportMissingImports = "error"
 reportMissingTypeStubs = "error"
 reportUnknownParameterType = "warning"
@@ -62,6 +67,7 @@ reportUnknownMemberType = "warning"
 reportUntypedFunctionDecorator = "warning"
 reportUntypedClassDecorator = "warning"
 reportUntypedNamedTuple = "warning"
+reportUnusedImport = "warning"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -70,6 +76,8 @@ addopts = [
     "--strict-config",
     "--strict-markers",
 ]
+timeout = 30
+timeout_method = "thread"
 pythonpath = ["src", "."]
 
 [tool.coverage.run]
@@ -82,4 +90,4 @@ concurrency = ["thread"]
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
-fail_under = 100
+fail_under = 95

@@ -12,7 +12,8 @@ The `llm-judge` project evaluates how language models respond to a politically s
 
 - Launches the test run via command-line arguments.
 - Ensures `OPENROUTER_API_KEY` is set before execution.
-- Chooses model slugs, judge model, and optional probes.
+- Chooses model slugs and judge model.
+- Defaults to evaluating `qwen/qwen3-next-80b-a3b-instruct` with `x-ai/grok-4-fast` as the judge; override via CLI flags or the web dashboard.
 - Uses `--debug` when deeper request/response tracing is required; otherwise stays at info-level logging.
 - Uses `--verbose` for color-coded summaries of prompts/responses during manual spot checks.
 - Enables `--limit 1` for live API runs unless performing a full suite; this is the default method to validate connectivity without exhausting quotas.
@@ -23,6 +24,13 @@ The `llm-judge` project evaluates how language models respond to a politically s
 - Coordinates prompt iteration, issues initial and follow-up calls, and saves JSON artifacts.
 - Pauses between requests (`sleep` argument) to respect rate limits.
 - Emits a CSV summary with judge metadata; no deletion of prior runs.
+
+### Web Dashboard (`llm_judge.webapp` + `webui/`)
+
+- Serves a Flask backend with SSE endpoints, powered by Gunicorn + gevent for concurrent streaming.
+- Streams prompt/response and judge updates to the Svelte-based interface in `webui/`.
+- Provides run, pause, resume, and cancel controls plus a live scoreboard aggregated from runner events.
+- Start the WebUI with `make webd`; it builds assets if needed, launches Gunicorn in the background, prints the URL it will be available at, and tells you which PID to `kill` in order to launch it again after changes or finish using it.
 
 ### Judge Agent (`llm_judge.judging.judge_decide`)
 
@@ -48,6 +56,7 @@ The `llm-judge` project evaluates how language models respond to a politically s
 
 - Install dependencies with `make install` (uv extra `dev`).
 - Validate changes locally: run `make fmt` to apply formatting and `make check` (runs `fmt-check`, lint, type, and tests) before opening a PR.
+- Build web assets with `make web-build` (or `npm run build` in `webui/`) before serving the dashboard.
 - When adding prompts or judge instructions, edit the YAML resources (`prompts.yaml`, `judge_config.yaml`) and update tests if structures change.
 - Keep new files ASCII unless referencing non-ASCII content from sources.
 - Respect `.flake8` exclusions to avoid linting generated artifacts.
