@@ -1,10 +1,50 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    wait_for_ci: true
+
 coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
   status:
     project:
       default:
         target: 95%
-        threshold: 5%
+        threshold: 2%
         base: auto
-        branches:
-        - master
-        if_ci_failed: success
+        only_pulls: false
+        if_ci_failed: error
+
+    patch:
+      default:
+        target: 90% # Slightly looser for mixed-language diffs
+        threshold: 2%
+        only_pulls: true
+        if_ci_failed: error
+        removed_code_behavior: off
+
+    # Optional third “informational” metric for large refactors
+    changes:
+      default:
+        informational: true
+
+parsers:
+  cobertura:
+    partials_as_hits: true
+  lcov:
+    partials_as_hits: true
+  javascript:
+    partials_as_hits: true
+  typescript:
+    partials_as_hits: true
+
+# test helpers
+ignore:
+  - "tests/**"
+  - "**/node_modules/**"
+  - "**/.svelte-kit/**"
+  - "frontend/build/**"
+  - "**/__pycache__/**"
+  - "**/migrations/**"
