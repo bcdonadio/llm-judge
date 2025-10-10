@@ -54,6 +54,7 @@ uv.lock.bak
 # Runtime logs & temp files
 *.log
 *.tmp
+.gunicorn-web.pid
 
 # Generated artifacts
 results/

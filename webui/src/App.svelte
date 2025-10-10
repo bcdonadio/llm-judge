@@ -1,34 +1,34 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
   import ControlPanel from '@/lib/components/ControlPanel.svelte';
   import Scoreboard from '@/lib/components/Scoreboard.svelte';
   import ChatWindow from '@/lib/components/ChatWindow.svelte';
   import { artifactsStore, connectEvents, initializeStores } from '@/lib/stores';
 
-  let disconnect: (() => void) | null = null;
-  let loaded = false;
+  let disconnect = $state<(() => void) | null>(null);
+  let loaded = $state(false);
 
-onMount(() => {
-  let cancelled = false;
-  (async () => {
-    try {
-      await initializeStores();
-    } catch (error) {
-      console.error('Failed to initialise stores', error);
-    } finally {
-      if (!cancelled) {
-        disconnect = connectEvents();
-        loaded = true;
+  $effect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await initializeStores();
+      } catch (error) {
+        console.error('Failed to initialise stores', error);
+      } finally {
+        if (!cancelled) {
+          disconnect = connectEvents();
+          loaded = true;
+        }
       }
-    }
-  })();
+    })();
 
-  return () => {
-    cancelled = true;
-    disconnect?.();
-  };
-});
-  $: artifacts = $artifactsStore;
+    return () => {
+      cancelled = true;
+      disconnect?.();
+    };
+  });
+
+  const artifacts = $derived($artifactsStore);
 </script>
 
 <div class="app-grid">

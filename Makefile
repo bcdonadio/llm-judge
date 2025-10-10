@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -8,6 +8,7 @@ GUNICORN ?= gunicorn
 GUNICORN_BIND ?= 0.0.0.0:5000
 GUNICORN_WORKERS ?= 1
 GUNICORN_WORKER_CONNECTIONS ?= 1000
+GUNICORN_PID_FILE ?= .gunicorn-web.pid
 
 install: hooks
 	$(UV) sync --extra dev
@@ -92,3 +93,16 @@ web-build:
 
 web: web-build
 	$(GUNICORN) llm_judge.webapp:app --worker-class gevent --workers $(GUNICORN_WORKERS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --bind $(GUNICORN_BIND)
+
+webd: web-build
+	@PID_FILE=$(GUNICORN_PID_FILE); \
+	if [ -f $$PID_FILE ] && kill -0 "$$(cat $$PID_FILE)" 2>/dev/null; then \
+		echo "Gunicorn already running with PID $$(cat $$PID_FILE). Stop it with 'kill $$(cat $$PID_FILE)' first."; \
+		exit 1; \
+	fi; \
+		$(GUNICORN) llm_judge.webapp:app --worker-class gevent --workers $(GUNICORN_WORKERS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --bind $(GUNICORN_BIND) --daemon --pid $$PID_FILE; \
+		while [ ! -f $$PID_FILE ]; do sleep 0.1; done; \
+		PID=$$(cat $$PID_FILE); \
+		URL=$$(echo "$(GUNICORN_BIND)" | sed 's/^0\.0\.0\.0/127.0.0.1/'); \
+		echo "Web dashboard available at http://$$URL/"; \
+		echo "Stop it with 'kill $$PID'."

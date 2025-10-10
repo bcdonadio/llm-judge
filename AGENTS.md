@@ -30,7 +30,7 @@ The `llm-judge` project evaluates how language models respond to a politically s
 - Serves a Flask backend with SSE endpoints, powered by Gunicorn + gevent for concurrent streaming.
 - Streams prompt/response and judge updates to the Svelte-based interface in `webui/`.
 - Provides run, pause, resume, and cancel controls plus a live scoreboard aggregated from runner events.
-- Requires `make web` (or `npm run build` under `webui/`) to compile Vite assets before serving.
+- Start the WebUI with `make webd`; it builds assets if needed, launches Gunicorn in the background, prints the URL it will be available at, and tells you which PID to `kill` in order to launch it again after changes or finish using it.
 
 ### Judge Agent (`llm_judge.judging.judge_decide`)
 
