@@ -33,6 +33,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: webui/package-lock.json
+
       - name: Set up uv
         if: ${{ env.ACT != 'true' }}
         uses: astral-sh/setup-uv@v7
@@ -85,9 +92,9 @@ jobs:
           python-version: "3.13"
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: webui/package-lock.json
 
