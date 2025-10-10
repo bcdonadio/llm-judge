@@ -129,15 +129,12 @@ jobs:
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5.5.1
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          files: |
-            coverage.json
-            webui/coverage/lcov.info
+          files: ./coverage.json,./webui/coverage/lcov.info
           flags: pytest,vitest
           disable_search: true
           fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
