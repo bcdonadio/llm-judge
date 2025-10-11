@@ -1,50 +1,59 @@
 <script lang="ts">
-  import { cancelRun, defaultsStore, isActiveState, pauseRun, resumeRun, startRun, statusStore } from '@/lib/stores';
-  import { parseLimit, parseModels } from './control-panel-helpers';
-  import type { RunConfig, RunState } from '@/lib/types';
+  import {
+    cancelRun,
+    defaultsStore,
+    isActiveState,
+    pauseRun,
+    resumeRun,
+    startRun,
+    statusStore,
+  } from "@/lib/stores";
+  import { parseLimit, parseModels } from "./control-panel-helpers";
+  import type { RunConfig, RunState } from "@/lib/types";
 
   const baseConfig: RunConfig = {
-    models: ['qwen/qwen3-next-80b-a3b-instruct'],
-    judge_model: 'x-ai/grok-4-fast',
+    models: ["qwen/qwen3-next-80b-a3b-instruct"],
+    judge_model: "x-ai/grok-4-fast",
     limit: 1,
     max_tokens: 8000,
     judge_max_tokens: 6000,
     temperature: 0.2,
     judge_temperature: 0.0,
     sleep_s: 0.2,
-    outdir: 'results',
+    outdir: "results",
     verbose: false,
   };
 
   let config: RunConfig = { ...baseConfig };
-  let modelsText = baseConfig.models.join('\n');
-  let limitText = baseConfig.limit != null ? String(baseConfig.limit) : '';
-  let message = '';
-  let messageKind: 'info' | 'error' = 'info';
+  let modelsText = baseConfig.models.join("\n");
+  let limitText = baseConfig.limit != null ? String(baseConfig.limit) : "";
+  let message = "";
+  let messageKind: "info" | "error" = "info";
   let submitting = false;
   let defaultsBootstrapped = false;
-  let state: RunState = 'idle';
+  let state: RunState = "idle";
 
   $: currentStatus = $statusStore;
-  $: state = currentStatus.state ?? 'idle';
+  $: state = currentStatus.state ?? "idle";
   $: disableRun = submitting || isActiveState(state);
-  $: canPause = state === 'running';
-  $: canResume = state === 'paused';
+  $: canPause = state === "running";
+  $: canResume = state === "paused";
   $: canCancel = isActiveState(state);
 
   $: if (!defaultsBootstrapped && $defaultsStore) {
     defaultsBootstrapped = true;
     config = { ...baseConfig, ...$defaultsStore };
-    modelsText = $defaultsStore.models.join('\n');
-    limitText = $defaultsStore.limit != null ? String($defaultsStore.limit) : '';
+    modelsText = $defaultsStore.models.join("\n");
+    limitText =
+      $defaultsStore.limit != null ? String($defaultsStore.limit) : "";
   }
 
-  function showMessage(text: string, kind: 'info' | 'error' = 'info') {
+  function showMessage(text: string, kind: "info" | "error" = "info") {
     message = text;
     messageKind = kind;
     if (text) {
       setTimeout(() => {
-        message = '';
+        message = "";
       }, 5000);
     }
   }
@@ -53,7 +62,7 @@
     submitting = true;
     const models = parseModels(modelsText);
     if (!models.length) {
-      showMessage('Please provide at least one model slug.', 'error');
+      showMessage("Please provide at least one model slug.", "error");
       submitting = false;
       return;
     }
@@ -66,37 +75,37 @@
     const result = await startRun(nextConfig);
     submitting = false;
     if (!result.ok) {
-      showMessage(result.message ?? 'Unable to start run', 'error');
+      showMessage(result.message ?? "Unable to start run", "error");
       return;
     }
-    showMessage('Evaluation run triggered.', 'info');
+    showMessage("Evaluation run triggered.", "info");
   }
 
   async function handlePause() {
     const result = await pauseRun();
     if (!result.ok) {
-      showMessage(result.message ?? 'Pause failed', 'error');
+      showMessage(result.message ?? "Pause failed", "error");
       return;
     }
-    showMessage('Run paused.');
+    showMessage("Run paused.");
   }
 
   async function handleResume() {
     const result = await resumeRun();
     if (!result.ok) {
-      showMessage(result.message ?? 'Resume failed', 'error');
+      showMessage(result.message ?? "Resume failed", "error");
       return;
     }
-    showMessage('Run resumed.');
+    showMessage("Run resumed.");
   }
 
   async function handleCancel() {
     const result = await cancelRun();
     if (!result.ok) {
-      showMessage(result.message ?? 'Cancel failed', 'error');
+      showMessage(result.message ?? "Cancel failed", "error");
       return;
     }
-    showMessage('Cancellation requested.');
+    showMessage("Cancellation requested.");
   }
 </script>
 
@@ -126,7 +135,13 @@
       </label>
       <label>
         <span>Prompt limit</span>
-        <input type="number" min="0" step="1" bind:value={limitText} placeholder="Leave blank for all prompts" />
+        <input
+          type="number"
+          min="0"
+          step="1"
+          bind:value={limitText}
+          placeholder="Leave blank for all prompts"
+        />
       </label>
     </div>
 
@@ -148,11 +163,21 @@
         </label>
         <label>
           <span>Temperature</span>
-          <input type="number" min="0" step="0.1" bind:value={config.temperature} />
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            bind:value={config.temperature}
+          />
         </label>
         <label>
           <span>Judge temperature</span>
-          <input type="number" min="0" step="0.1" bind:value={config.judge_temperature} />
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            bind:value={config.judge_temperature}
+          />
         </label>
         <label>
           <span>Inter-request sleep (s)</span>
@@ -163,16 +188,27 @@
 
     <div class="actions">
       <button type="submit" disabled={disableRun}>Run</button>
-      <button type="button" disabled={!canPause} on:click={handlePause}>Pause</button>
-      <button type="button" disabled={!canResume} on:click={handleResume}>Resume</button>
-      <button type="button" disabled={!canCancel} class="secondary" on:click={handleCancel}>Cancel</button>
+      <button type="button" disabled={!canPause} on:click={handlePause}
+        >Pause</button
+      >
+      <button type="button" disabled={!canResume} on:click={handleResume}
+        >Resume</button
+      >
+      <button
+        type="button"
+        disabled={!canCancel}
+        class="secondary"
+        on:click={handleCancel}>Cancel</button
+      >
     </div>
   </form>
 
   <footer class="status">
     <span class={`state state-${state}`}>{state}</span>
     {#if currentStatus.config?.models?.length}
-      <span class="models-count">{currentStatus.config.models.length} models queued</span>
+      <span class="models-count"
+        >{currentStatus.config.models.length} models queued</span
+      >
     {/if}
     {#if message}
       <span class={`message ${messageKind}`}>{message}</span>

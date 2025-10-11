@@ -1,8 +1,12 @@
 <script lang="ts">
-  import ControlPanel from '@/lib/components/ControlPanel.svelte';
-  import Scoreboard from '@/lib/components/Scoreboard.svelte';
-  import ChatWindow from '@/lib/components/ChatWindow.svelte';
-  import { artifactsStore, connectEvents, initializeStores } from '@/lib/stores';
+  import ControlPanel from "@/lib/components/ControlPanel.svelte";
+  import Scoreboard from "@/lib/components/Scoreboard.svelte";
+  import ChatWindow from "@/lib/components/ChatWindow.svelte";
+  import {
+    artifactsStore,
+    connectEvents,
+    initializeStores,
+  } from "@/lib/stores";
 
   let disconnect = $state<(() => void) | null>(null);
   let loaded = $state(false);
@@ -13,7 +17,7 @@
       try {
         await initializeStores();
       } catch (error) {
-        console.error('Failed to initialise stores', error);
+        console.error("Failed to initialise stores", error);
       } finally {
         if (!cancelled) {
           disconnect = connectEvents();
@@ -143,7 +147,7 @@
     background: rgba(21, 37, 43, 0.85);
     padding: 0.25rem 0.5rem;
     border-radius: 6px;
-    font-family: 'Fira Code', 'SFMono-Regular', monospace;
+    font-family: "Fira Code", "SFMono-Regular", monospace;
     font-size: 0.8rem;
     color: var(--color-accent);
     overflow-wrap: anywhere;

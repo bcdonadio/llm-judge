@@ -1,38 +1,38 @@
 <script lang="ts">
-  import { derived } from 'svelte/store';
-  import { scoreboardStore, statusStore } from '@/lib/stores';
+  import { derived } from "svelte/store";
+  import { scoreboardStore, statusStore } from "@/lib/stores";
 
   const scoreboard = derived(scoreboardStore, ($store) => $store);
   const status = derived(statusStore, ($store) => $store.state);
 
   const formatPercent = (value: number | undefined): string => {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      return '0%';
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      return "0%";
     }
     return `${Math.round(value * 100)}%`;
   };
 
   const formatAverage = (value: number | undefined): string => {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      return '0.00';
+    if (typeof value !== "number" || Number.isNaN(value)) {
+      return "0.00";
     }
     return value.toFixed(2);
   };
 
   const formatCounts = (counts: Record<string, number> | undefined): string => {
     if (!counts) {
-      return 'n/a';
+      return "n/a";
     }
     const entries = Object.entries(counts)
       .filter(([, value]) => value)
       .sort((a, b) => b[1] - a[1]);
     if (!entries.length) {
-      return 'n/a';
+      return "n/a";
     }
     return entries
       .slice(0, 3)
       .map(([label, count]) => `${label}×${count}`)
-      .join(', ');
+      .join(", ");
   };
 </script>
 

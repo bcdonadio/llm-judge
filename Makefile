@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
+.PHONY: check fmt fmt-black fmt-eslint fmt-check fmt-check-black fmt-check-eslint lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -58,11 +58,21 @@ fmt-check-hook:
 	fi
 	@chmod +x $(PRECOMMIT_HOOK)
 
-fmt:
+fmt: fmt-black fmt-eslint
+
+fmt-black:
 	$(UV_RUN) black .
 
-fmt-check:
+fmt-eslint:
+	cd webui && $(WEBUI_NPM) run format
+
+fmt-check: fmt-check-black fmt-check-eslint
+
+fmt-check-black:
 	$(UV_RUN) black --check .
+
+fmt-check-eslint:
+	cd webui && $(WEBUI_NPM) run format:check
 
 lint: lint-black lint-flake8 lint-eslint
 
