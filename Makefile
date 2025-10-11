@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-check lint lint-black lint-flake8 type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
+.PHONY: check fmt fmt-check lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -64,13 +64,20 @@ fmt:
 fmt-check:
 	$(UV_RUN) black --check .
 
-lint: lint-black lint-flake8
+lint: lint-black lint-flake8 lint-eslint
 
 lint-black:
 	$(UV_RUN) black --check .
 
 lint-flake8:
 	$(UV_RUN) flake8 .
+
+lint-eslint:
+	@if [ -n "$$CI" ]; then \
+		cd webui && $(WEBUI_NPM) run lint:ci; \
+	else \
+		cd webui && $(WEBUI_NPM) run lint; \
+	fi
 
 type: type-mypy type-pyright
 

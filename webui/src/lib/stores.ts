@@ -133,7 +133,7 @@ function handleEvent(event: EventPayload): void {
   const { type, payload } = event;
   switch (type) {
     case 'status':
-      updateStatus(payload as StatusPayload);
+      updateStatus(payload as unknown as StatusPayload);
       break;
     case 'run_started':
       clearTimeline();

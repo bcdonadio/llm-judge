@@ -31,13 +31,17 @@
   const artifacts = $derived($artifactsStore);
 </script>
 
-<div class="app-grid">
-  <aside class="sidebar">
-    <Scoreboard />
-  </aside>
-  <main class="main">
+<div class="app-shell">
+  <aside class="controls-pane">
     <ControlPanel />
-    <ChatWindow />
+  </aside>
+  <section class="content-pane">
+    <div class="scoreboard-pane">
+      <Scoreboard />
+    </div>
+    <div class="chat-wrapper">
+      <ChatWindow />
+    </div>
     {#if artifacts?.csv_path}
       <section class="artifacts">
         <h3>Artifacts</h3>
@@ -57,31 +61,53 @@
         <p>Loading dashboard…</p>
       </div>
     {/if}
-  </main>
+  </section>
 </div>
 
 <style>
-  .app-grid {
+  .app-shell {
     display: grid;
-    grid-template-columns: minmax(260px, 320px) 1fr;
+    grid-template-columns: minmax(280px, 20%) 1fr;
     gap: 1.5rem;
     padding: 2rem;
-    min-height: 100vh;
     box-sizing: border-box;
+    height: 100vh;
+    overflow: hidden;
   }
 
-  .sidebar {
+  .controls-pane {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    min-width: 0;
     min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.25rem;
   }
 
-  .main {
+  .content-pane {
+    position: relative;
     display: grid;
     grid-template-rows: auto 1fr auto;
     gap: 1.5rem;
-    position: relative;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .scoreboard-pane {
+    min-height: 0;
+    max-height: 40vh;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+
+  .scoreboard-pane :global(.scoreboard) {
+    min-height: auto;
+  }
+
+  .chat-wrapper {
+    min-height: 0;
+    overflow: hidden;
   }
 
   .artifacts {
@@ -160,17 +186,26 @@
     }
   }
 
-  @media (max-width: 1080px) {
-    .app-grid {
+  @media (max-width: 960px) {
+    .app-shell {
       grid-template-columns: 1fr;
+      height: auto;
+      min-height: 100vh;
     }
 
-    .sidebar {
-      order: 2;
+    .controls-pane {
+      overflow: visible;
+      padding-right: 0;
     }
 
-    .main {
-      order: 1;
+    .scoreboard-pane {
+      max-height: none;
+      overflow: visible;
+      padding-right: 0;
+    }
+
+    .content-pane {
+      min-height: auto;
     }
   }
 </style>

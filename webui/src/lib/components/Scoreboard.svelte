@@ -46,7 +46,7 @@
     <p class="empty">No judgments yet. Launch a run to populate results.</p>
   {:else}
     <div class="grid">
-      {#each Object.entries($scoreboard) as [model, data]}
+      {#each Object.entries($scoreboard) as [model, data] (model)}
         <article class="card">
           <header>
             <h3>{model}</h3>

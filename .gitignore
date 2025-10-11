@@ -40,6 +40,7 @@ pytest-*.xml
 coverage.json
 coverage.xml
 webui/coverage/
+webui/eslint-report.xml
 htmlcov/
 .dmypy.json
 dmypy.json
