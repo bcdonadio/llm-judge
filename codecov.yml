@@ -30,16 +30,6 @@ coverage:
       default:
         informational: true
 
-parsers:
-  cobertura:
-    partials_as_hits: true
-  lcov:
-    partials_as_hits: true
-  javascript:
-    partials_as_hits: true
-  typescript:
-    partials_as_hits: true
-
 # test helpers
 ignore:
   - "tests/**"
