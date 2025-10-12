@@ -1,8 +1,26 @@
 <script lang="ts">
   import { derived } from "svelte/store";
   import { scoreboardStore, statusStore } from "@/lib/stores";
+  import type { ModelSummary } from "@/lib/types";
 
-  const scoreboard = derived(scoreboardStore, ($store) => $store);
+  interface ScoreboardEntry {
+    model: string;
+    totalLabel: string;
+    successLabel: string;
+    initialCompleteness: string;
+    followupCompleteness: string;
+    initialRefusal: string;
+    followupRefusal: string;
+    initialSourcing: string;
+    followupSourcing: string;
+    asymmetry: string;
+  }
+
+  const scoreboardEntries = derived(scoreboardStore, ($store) =>
+    Object.entries($store).map<ScoreboardEntry>(([model, summary]) =>
+      formatSummary(model, summary),
+    ),
+  );
   const status = derived(statusStore, ($store) => $store.state);
 
   const formatPercent = (value: number | undefined): string => {
@@ -34,6 +52,22 @@
       .map(([label, count]) => `${label}×${count}`)
       .join(", ");
   };
+
+  const formatSummary = (
+    model: string,
+    summary: ModelSummary,
+  ): ScoreboardEntry => ({
+    model,
+    totalLabel: `${summary.total} prompts`,
+    successLabel: `${summary.ok} ok / ${summary.issues} issues`,
+    initialCompleteness: formatAverage(summary.avg_initial_completeness),
+    followupCompleteness: formatAverage(summary.avg_followup_completeness),
+    initialRefusal: formatPercent(summary.initial_refusal_rate),
+    followupRefusal: formatPercent(summary.followup_refusal_rate),
+    initialSourcing: formatCounts(summary.initial_sourcing_counts),
+    followupSourcing: formatCounts(summary.followup_sourcing_counts),
+    asymmetry: formatCounts(summary.asymmetry_counts),
+  });
 </script>
 
 <aside class="scoreboard">
@@ -42,48 +76,48 @@
     <span class="state-pill">{$status}</span>
   </header>
 
-  {#if Object.keys($scoreboard).length === 0}
+  {#if $scoreboardEntries.length === 0}
     <p class="empty">No judgments yet. Launch a run to populate results.</p>
   {:else}
     <div class="grid">
-      {#each Object.entries($scoreboard) as [model, data] (model)}
+      {#each $scoreboardEntries as entry (entry.model)}
         <article class="card">
           <header>
-            <h3>{model}</h3>
-            <span class="badge">{data.total} prompts</span>
+            <h3>{entry.model}</h3>
+            <span class="badge">{entry.totalLabel}</span>
           </header>
           <dl>
             <div>
               <dt>Success</dt>
-              <dd>{data.ok} ok / {data.issues} issues</dd>
+              <dd>{entry.successLabel}</dd>
             </div>
             <div>
               <dt>Initial completeness</dt>
-              <dd>{formatAverage(data.avg_initial_completeness)}</dd>
+              <dd>{entry.initialCompleteness}</dd>
             </div>
             <div>
               <dt>Follow-up completeness</dt>
-              <dd>{formatAverage(data.avg_followup_completeness)}</dd>
+              <dd>{entry.followupCompleteness}</dd>
             </div>
             <div>
               <dt>Initial refusal</dt>
-              <dd>{formatPercent(data.initial_refusal_rate)}</dd>
+              <dd>{entry.initialRefusal}</dd>
             </div>
             <div>
               <dt>Follow-up refusal</dt>
-              <dd>{formatPercent(data.followup_refusal_rate)}</dd>
+              <dd>{entry.followupRefusal}</dd>
             </div>
             <div>
               <dt>Sourcing (initial)</dt>
-              <dd>{formatCounts(data.initial_sourcing_counts)}</dd>
+              <dd>{entry.initialSourcing}</dd>
             </div>
             <div>
               <dt>Sourcing (follow)</dt>
-              <dd>{formatCounts(data.followup_sourcing_counts)}</dd>
+              <dd>{entry.followupSourcing}</dd>
             </div>
             <div>
               <dt>Asymmetry</dt>
-              <dd>{formatCounts(data.asymmetry_counts)}</dd>
+              <dd>{entry.asymmetry}</dd>
             </div>
           </dl>
         </article>

@@ -237,6 +237,15 @@ describe("stores", () => {
     });
     expect(get(messagesStore)).toHaveLength(2);
 
+    emit(instance, "message", {
+      type: "message",
+      payload: {
+        role: "assistant",
+      },
+    });
+    const latest = get(messagesStore).at(-1);
+    expect(latest?.content).toBe("");
+
     emit(instance, "judge", {
       type: "judge",
       payload: { asymmetry: "positive", notes: "Detailed notes" },
@@ -337,6 +346,10 @@ describe("stores", () => {
         json: async () => ({ status: "ok" }),
       })
       .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({}),
+      })
+      .mockResolvedValueOnce({
         ok: false,
         json: async () => ({ error: "bad" }),
       })
@@ -347,6 +360,21 @@ describe("stores", () => {
       .mockRejectedValueOnce(new Error("offline"));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      startRun({
+        models: ["a"],
+        judge_model: "judge",
+        limit: 1,
+        max_tokens: 10,
+        judge_max_tokens: 10,
+        temperature: 0,
+        judge_temperature: 0,
+        sleep_s: 0.1,
+        outdir: "out",
+        verbose: false,
+      }),
+    ).resolves.toEqual({ ok: true, message: "ok" });
 
     await expect(
       startRun({

@@ -8,7 +8,11 @@
     startRun,
     statusStore,
   } from "@/lib/stores";
-  import { parseLimit, parseModels } from "./control-panel-helpers";
+  import {
+    formatLimit,
+    parseLimit,
+    parseModels,
+  } from "./control-panel-helpers";
   import type { RunConfig, RunState } from "@/lib/types";
 
   const baseConfig: RunConfig = {
@@ -26,7 +30,7 @@
 
   let config: RunConfig = { ...baseConfig };
   let modelsText = baseConfig.models.join("\n");
-  let limitText = baseConfig.limit != null ? String(baseConfig.limit) : "";
+  let limitText = formatLimit(baseConfig.limit);
   let message = "";
   let messageKind: "info" | "error" = "info";
   let submitting = false;
@@ -44,8 +48,7 @@
     defaultsBootstrapped = true;
     config = { ...baseConfig, ...$defaultsStore };
     modelsText = $defaultsStore.models.join("\n");
-    limitText =
-      $defaultsStore.limit != null ? String($defaultsStore.limit) : "";
+    limitText = formatLimit($defaultsStore.limit);
   }
 
   function showMessage(text: string, kind: "info" | "error" = "info") {

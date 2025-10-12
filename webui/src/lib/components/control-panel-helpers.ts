@@ -13,3 +13,7 @@ export function parseLimit(raw: string | number): number | null {
   const parsed = Number.parseInt(str, 10);
   return Number.isNaN(parsed) ? null : parsed;
 }
+
+export function formatLimit(limit: number | null | undefined): string {
+  return limit == null ? "" : String(limit);
+}

@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { tick } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ControlPanel from "./ControlPanel.svelte";
-import { parseLimit, parseModels } from "./control-panel-helpers";
+import { formatLimit, parseLimit, parseModels } from "./control-panel-helpers";
 import * as stores from "@/lib/stores";
-import type { RunConfig } from "@/lib/types";
+import type { RunConfig, RunState } from "@/lib/types";
 
 const { statusStore, defaultsStore } = stores;
 
@@ -112,6 +112,9 @@ describe("ControlPanel", () => {
     expect(parseModels("one, two\nthree")).toEqual(["one", "two", "three"]);
     expect(parseLimit("   ")).toBeNull();
     expect(parseLimit("42")).toBe(42);
+    expect(formatLimit(5)).toBe("5");
+    expect(formatLimit(null)).toBe("");
+    expect(formatLimit(undefined)).toBe("");
   });
 
   it("handles backend errors for lifecycle actions", async () => {
@@ -193,5 +196,11 @@ describe("ControlPanel", () => {
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Resume" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).not.toBeDisabled();
+  });
+
+  it("falls back to the idle state when status data is missing", async () => {
+    statusStore.set({ ...baseStatus, state: undefined as unknown as RunState });
+    render(ControlPanel);
+    expect(screen.getByText("idle")).toBeInTheDocument();
   });
 });
