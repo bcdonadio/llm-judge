@@ -171,6 +171,7 @@ def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_
                 "export QUOTED='hello world'",
                 "INLINE=value # inline comment",
                 "BARE=value2",
+                "LEADING=# comment",
                 "EMPTY=",
                 "EMBEDDED=abc#123",
                 "export NO_EQUALS",
@@ -187,6 +188,7 @@ def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.delenv("QUOTED", raising=False)
     monkeypatch.setenv("INLINE", "preexisting")
     monkeypatch.delenv("BARE", raising=False)
+    monkeypatch.delenv("LEADING", raising=False)
     monkeypatch.delenv("EMPTY", raising=False)
     monkeypatch.delenv("EMBEDDED", raising=False)
 
@@ -195,6 +197,7 @@ def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_
     assert os.environ["QUOTED"] == "hello world"
     assert os.environ["INLINE"] == "preexisting"  # existing value not overridden
     assert os.environ["BARE"] == "value2"
+    assert os.environ["LEADING"] == ""
     assert os.environ["EMPTY"] == ""
     assert os.environ["EMBEDDED"] == "abc#123"
     assert "NO_EQUALS" not in os.environ

@@ -75,8 +75,10 @@ def _strip_quotes(value: str) -> str:
 def _strip_inline_comment(value: str) -> str:
     if "#" not in value:
         return value
-    for idx in range(1, len(value)):
-        if value[idx] == "#" and value[idx - 1].isspace():
+    for idx, char in enumerate(value):
+        if char != "#":
+            continue
+        if idx == 0 or value[idx - 1].isspace():
             return value[:idx].rstrip()
     return value
 

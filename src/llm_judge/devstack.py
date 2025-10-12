@@ -510,11 +510,24 @@ def status_devstack(config: DevStackConfig) -> int:
 
 
 def make_config(args: argparse.Namespace) -> DevStackConfig:
-    backend_exclude_patterns = (
-        tuple(args.backend_exclude_pattern)
-        if getattr(args, "backend_exclude_pattern", None)
-        else DEFAULT_BACKEND_EXCLUDE_PATTERNS
-    )
+    raw_patterns = getattr(args, "backend_exclude_pattern", None)
+    provided_patterns: tuple[str, ...] = tuple(str(pattern) for pattern in raw_patterns) if raw_patterns else ()
+    if provided_patterns:
+        combined: list[str] = []
+        seen: set[str] = set()
+
+        def append_unique(patterns: tuple[str, ...]) -> None:
+            for pattern in patterns:
+                if pattern in seen:
+                    continue
+                combined.append(pattern)
+                seen.add(pattern)
+
+        append_unique(DEFAULT_BACKEND_EXCLUDE_PATTERNS)
+        append_unique(provided_patterns)
+        backend_exclude_patterns = tuple(combined)
+    else:
+        backend_exclude_patterns = DEFAULT_BACKEND_EXCLUDE_PATTERNS
     return DevStackConfig(
         backend_host=args.backend_host,
         backend_port=args.backend_port,

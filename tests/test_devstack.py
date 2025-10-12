@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import fnmatch
 import json
 import signal
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Sequence, cast
@@ -755,7 +755,33 @@ def test_make_config_custom_patterns() -> None:
         backend_exclude_pattern=["tmp/*", "data/*"],
     )
     config = devstack.make_config(args)
-    assert config.backend_exclude_patterns == ("tmp/*", "data/*")
+    defaults = devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    assert config.backend_exclude_patterns[: len(defaults)] == defaults
+    assert config.backend_exclude_patterns[-2:] == ("tmp/*", "data/*")
+
+
+def test_make_config_deduplicates_patterns() -> None:
+    args = argparse.Namespace(
+        backend_host="host",
+        backend_port=1,
+        frontend_host="fhost",
+        frontend_port=2,
+        python_executable="python",
+        npm_command="npm",
+        flask_app="app:create",
+        project_root=".",
+        log_dir=".logs",
+        pid_file=".pid",
+        state_file=".state",
+        controller_log=".ctrl",
+        backend_log=".back",
+        frontend_log=".front",
+        backend_exclude_pattern=["results/*", "extra/*"],
+    )
+    config = devstack.make_config(args)
+    patterns = config.backend_exclude_patterns
+    assert patterns.count("results/*") == 1
+    assert patterns[-1] == "extra/*"
 
 
 def test_default_backend_exclude_patterns_guardrails() -> None:
