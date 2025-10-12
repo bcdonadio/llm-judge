@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, cast, TypeGuard
 
@@ -45,6 +46,12 @@ def safe_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2)
+
+
+def create_temp_outdir(*, prefix: str = "llm-judge-") -> Path:
+    """Create and return a temporary directory for storing run artifacts."""
+    temp_path = tempfile.mkdtemp(prefix=prefix)
+    return Path(temp_path)
 
 
 def _collect_content_segments(segments: Iterable[Any]) -> str:
@@ -132,4 +139,4 @@ def _all_dict_elements(items: Sequence[Any]) -> bool:
     return True
 
 
-__all__ = ["now_iso", "detect_refusal", "safe_write_json", "extract_text"]
+__all__ = ["now_iso", "detect_refusal", "safe_write_json", "extract_text", "create_temp_outdir"]

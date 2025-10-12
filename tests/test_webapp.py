@@ -420,7 +420,7 @@ def test_job_manager_artifacts_fallback(tmp_path: Path) -> None:
 
 def test_job_manager_default_runner_factory(tmp_path: Path) -> None:
     """Test that default runner factory creates LLMJudgeRunner."""
-    from llm_judge.runner import LLMJudgeRunner, RunnerConfig, RunnerControl
+    from llm_judge.runner import LLMJudgeRunner
 
     manager = JobManager(outdir=tmp_path)
     # Start a run that will use the default factory
@@ -514,7 +514,7 @@ class DummyManager:
             "temperature": 0.1,
             "judge_temperature": 0.0,
             "sleep_s": 0.1,
-            "outdir": "results",
+            "outdir": "/tmp/llm-judge-test",
         }
 
     def snapshot(self) -> Dict[str, Any]:
@@ -636,6 +636,16 @@ def test_frontend_serves_existing_asset(tmp_path: Path) -> None:
     css_response = client.get("/style.css")
     assert css_response.status_code == 200
     assert b"color: red" in css_response.data
+
+
+def test_create_app_configures_temp_outdir() -> None:
+    app = create_app({"TESTING": True})
+    outdir_value = cast(str, app.config["RUNS_OUTDIR"])
+    outdir = Path(outdir_value).resolve()
+    project_root = Path(__file__).resolve().parent.parent
+    assert outdir.exists()
+    with pytest.raises(ValueError):
+        outdir.relative_to(project_root)
 
 
 def test_job_manager_event_stream_includes_history(tmp_path: Path) -> None:

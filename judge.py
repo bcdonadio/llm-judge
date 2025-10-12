@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from llm_judge import LLMJudgeRunner, RunnerConfig
+from llm_judge.utils import create_temp_outdir
 from colorama import Fore, Style, init as colorama_init
 
 
@@ -33,8 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--outdir",
-        default="results",
-        help="Output directory (defaults to ./results).",
+        default=None,
+        help="Output directory (default: random temporary directory).",
     )
     parser.add_argument(
         "--max-tokens",
@@ -132,8 +133,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     use_color = configure_logging(args.debug, args.verbose)
 
-    outdir = Path(args.outdir)
+    outdir = Path(args.outdir) if args.outdir else create_temp_outdir()
     outdir.mkdir(parents=True, exist_ok=True)
+    print(f"[Artifacts] Using output directory: {outdir}")
 
     try:
         config = RunnerConfig(
