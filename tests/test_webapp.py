@@ -642,7 +642,7 @@ def test_create_app_configures_temp_outdir() -> None:
     app = create_app({"TESTING": True})
     outdir_value = cast(str, app.config["RUNS_OUTDIR"])
     outdir = Path(outdir_value).resolve()
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parent.parent
     assert outdir.exists()
     with pytest.raises(ValueError):
         outdir.relative_to(project_root)
