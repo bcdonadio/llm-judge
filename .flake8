@@ -21,4 +21,5 @@ exclude =
     parts,
     sdist,
     uv.lock,
-    results
+    results,
+    webui/node_modules

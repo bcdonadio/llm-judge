@@ -140,6 +140,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1.1.1
         with:
+          files: pytest-results.xml,webui/eslint-report.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test artifacts
@@ -152,6 +153,7 @@ jobs:
             pytest-results.xml
             coverage.json
             webui/coverage/lcov.info
+            webui/eslint-report.xml
 
       - name: Publish workflow summary
         if: always()

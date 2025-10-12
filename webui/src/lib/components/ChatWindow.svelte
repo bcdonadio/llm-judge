@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
-  import { messagesStore } from '@/lib/stores';
-  import type { MessageEntry } from '@/lib/types';
+  import { onDestroy, tick } from "svelte";
+  import { messagesStore } from "@/lib/stores";
+  import type { MessageEntry } from "@/lib/types";
 
   let messages: MessageEntry[] = [];
   let container: HTMLDivElement | null = null;
@@ -29,7 +29,7 @@
     if (Number.isFinite(message.promptIndex)) {
       parts.push(`#${message.promptIndex}`);
     }
-    return parts.join(' · ');
+    return parts.join(" · ");
   };
 </script>
 
@@ -50,7 +50,7 @@
             <span class="meta">{formatMeta(message)}</span>
           {/if}
           <div class="bubble">
-            <p>{message.content || 'No content returned.'}</p>
+            <p>{message.content || "No content returned."}</p>
             {#if message.step}
               <span class="step">{message.step}</span>
             {/if}

@@ -1,4 +1,11 @@
-export type RunState = 'idle' | 'running' | 'paused' | 'completed' | 'cancelled' | 'cancelling' | 'error';
+export type RunState =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "cancelling"
+  | "error";
 
 export interface StatusPayload {
   state: RunState;
@@ -42,7 +49,7 @@ export interface MessageEntry {
   id: string;
   model?: string;
   promptIndex?: number;
-  role: 'user' | 'assistant' | 'judge' | 'system';
+  role: "user" | "assistant" | "judge" | "system";
   content: string;
   step?: string;
   timestamp: number;

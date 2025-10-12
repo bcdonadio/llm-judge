@@ -1,0 +1,10 @@
+# Generated artifacts
+dist/
+coverage/
+eslint-report.xml
+
+# Dependency directories
+node_modules/
+
+# Lockfiles managed by tooling
+package-lock.json
