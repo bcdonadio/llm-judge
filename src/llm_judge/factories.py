@@ -21,7 +21,7 @@ class RunnerFactory:
         self,
         config: RunnerConfig,
         control: Optional[RunnerControl] = None,
-        progress_callback: Optional[Callable[[RunnerEvent], None]] = None
+        progress_callback: Optional[Callable[[RunnerEvent], None]] = None,
     ) -> LLMJudgeRunner:
         """Create a runner with dependencies resolved from the container.
 
@@ -54,10 +54,7 @@ class UnitOfWorkFactory:
         self._container = container
 
     def create_unit_of_work(
-        self,
-        outdir: Path,
-        timestamp: str | None = None,
-        csv_fieldnames: List[str] | None = None
+        self, outdir: Path, timestamp: str | None = None, csv_fieldnames: List[str] | None = None
     ) -> IUnitOfWork:
         """Create a unit of work for a specific run.
 
@@ -81,10 +78,7 @@ class UnitOfWorkFactory:
         csv_path = outdir / f"results_{timestamp}.csv"
 
         return UnitOfWork(
-            run_directory=run_directory,
-            csv_path=csv_path,
-            csv_fieldnames=csv_fieldnames,
-            fs_service=fs_service
+            run_directory=run_directory, csv_path=csv_path, csv_fieldnames=csv_fieldnames, fs_service=fs_service
         )
 
 

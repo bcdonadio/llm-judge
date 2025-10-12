@@ -1,12 +1,15 @@
 # LLM Judge - Detailed Refactoring Implementation Plan
 
 ## Overview
+
 This document provides the step-by-step implementation details for refactoring the LLM Judge codebase into a fully object-oriented, thread-safe architecture.
 
 ## Phase 1: Core Infrastructure Setup
 
 ### Step 1.1: Create Domain Models
+
 Create `src/llm_judge/domain/__init__.py`:
+
 ```python
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -57,7 +60,9 @@ class RunConfiguration:
 ```
 
 ### Step 1.2: Create Service Interfaces
+
 Create `src/llm_judge/services/interfaces.py`:
+
 ```python
 from typing import Protocol, List, Dict, Any, Optional
 from pathlib import Path
@@ -118,7 +123,9 @@ class IConfigurationManager(Protocol):
 ## Phase 2: Infrastructure Implementation
 
 ### Step 2.1: Refactor API Client
+
 Create `src/llm_judge/infrastructure/api_client.py`:
+
 ```python
 import threading
 import logging
@@ -256,7 +263,9 @@ class OpenRouterClient(IAPIClient):
 ```
 
 ### Step 2.2: Refactor Prompts Manager
+
 Create `src/llm_judge/infrastructure/prompts_manager.py`:
+
 ```python
 import threading
 from typing import List, Dict, Any, Optional
@@ -323,7 +332,9 @@ class PromptsManager(IPromptsManager):
 ```
 
 ### Step 2.3: Refactor Judge Service
+
 Create `src/llm_judge/infrastructure/judge_service.py`:
+
 ```python
 import json
 import threading
@@ -514,7 +525,9 @@ class JudgeService(IJudgeService):
 ## Phase 3: Dependency Injection Container
 
 ### Step 3.1: Create Container
+
 Create `src/llm_judge/container.py`:
+
 ```python
 import threading
 from typing import Type, Any, Dict, Callable, Optional, TypeVar
@@ -602,7 +615,9 @@ def create_container(config: Dict[str, Any]) -> ServiceContainer:
 ## Phase 4: Refactored Runner
 
 ### Step 4.1: Update Runner with DI
+
 Create `src/llm_judge/runner_v2.py`:
+
 ```python
 import csv
 import logging
@@ -801,7 +816,9 @@ class LLMJudgeRunnerV2:
 ## Phase 5: Web Application Refactoring
 
 ### Step 5.1: Application Factory
+
 Create `src/llm_judge/webapp/app_factory.py`:
+
 ```python
 import os
 from pathlib import Path

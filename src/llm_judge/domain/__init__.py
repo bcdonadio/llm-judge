@@ -8,6 +8,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Prompt:
     """Domain model for a prompt."""
+
     text: str
     category: str
     index: int
@@ -16,6 +17,7 @@ class Prompt:
 @dataclass(frozen=True)
 class ModelResponse:
     """Domain model for model response."""
+
     text: str
     raw_payload: Dict[str, Any]
     finish_reason: Optional[str] = None
@@ -24,6 +26,7 @@ class ModelResponse:
 @dataclass(frozen=True)
 class JudgeDecision:
     """Domain model for judge decision."""
+
     success: bool
     initial_refusal: bool
     initial_completeness: float
@@ -42,6 +45,7 @@ class JudgeDecision:
 @dataclass(frozen=True)
 class RunConfiguration:
     """Immutable run configuration."""
+
     models: List[str]
     judge_model: str
     outdir: Path

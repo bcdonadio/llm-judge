@@ -17,7 +17,7 @@ class IAPIClient(Protocol):
         temperature: float,
         metadata: Dict[str, str],
         response_format: Optional[Dict[str, Any]] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> ModelResponse:
         """Execute a chat completion request."""
         ...
@@ -47,11 +47,7 @@ class IJudgeService(Protocol):
     """Interface for judging logic."""
 
     def evaluate(
-        self,
-        prompt: str,
-        initial_response: ModelResponse,
-        follow_response: ModelResponse,
-        config: RunConfiguration
+        self, prompt: str, initial_response: ModelResponse, follow_response: ModelResponse, config: RunConfiguration
     ) -> JudgeDecision:
         """Evaluate responses and return judge decision."""
         ...

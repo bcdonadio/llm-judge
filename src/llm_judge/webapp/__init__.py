@@ -16,6 +16,7 @@ from ..utils import create_temp_outdir
 try:
     from ..container import ServiceContainer
     from ..factories import RunnerFactory
+
     has_di_support = True
 except ImportError:
     has_di_support = False
@@ -247,6 +248,7 @@ def create_app(
     if container is not None and has_di_support:
         # Use DI-based runner factory
         from ..factories import RunnerFactory as RunnerFactoryClass
+
         factory = RunnerFactoryClass(container)
 
         def di_runner_factory(
@@ -263,8 +265,8 @@ def create_app(
         runner_factory_fn = di_runner_factory
 
         # Store container in app extensions for potential access
-        app.extensions = getattr(app, 'extensions', {})
-        app.extensions['service_container'] = container
+        app.extensions = getattr(app, "extensions", {})
+        app.extensions["service_container"] = container
 
     # Create JobManager with or without custom factory
     if runner_factory_fn is not None:

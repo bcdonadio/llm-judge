@@ -20,7 +20,7 @@ class OpenRouterClient(IAPIClient):
         base_url: str = "https://openrouter.ai/api/v1",
         timeout: int = 120,
         max_retries: int = 2,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ):
         self._api_key = api_key
         self._base_url = base_url
@@ -35,10 +35,7 @@ class OpenRouterClient(IAPIClient):
         """Lazily create and cache the OpenAI client."""
         with self._lock:
             if self._client is None:
-                self._http_client = httpx.Client(
-                    http2=True,
-                    timeout=httpx.Timeout(self._timeout, connect=10)
-                )
+                self._http_client = httpx.Client(http2=True, timeout=httpx.Timeout(self._timeout, connect=10))
                 self._client = OpenAI(
                     api_key=self._api_key,
                     base_url=self._base_url,
@@ -56,7 +53,7 @@ class OpenRouterClient(IAPIClient):
         temperature: float,
         metadata: Dict[str, str],
         response_format: Optional[Dict[str, Any]] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> ModelResponse:
         """Execute a chat completion request."""
         client = self._ensure_client()
@@ -77,6 +74,7 @@ class OpenRouterClient(IAPIClient):
             if use_color:
                 try:
                     from colorama import Fore, Style
+
                     log_message = f"{Style.BRIGHT}{Fore.MAGENTA}{log_message}{Style.RESET_ALL}"
                 except ImportError:
                     pass
@@ -120,11 +118,7 @@ class OpenRouterClient(IAPIClient):
                 model,
             )
 
-            return ModelResponse(
-                text=text,
-                raw_payload=payload,
-                finish_reason=finish_reason
-            )
+            return ModelResponse(text=text, raw_payload=payload, finish_reason=finish_reason)
 
         except OpenAIError as exc:
             self._logger.error("API request failed: %s", exc, exc_info=True)

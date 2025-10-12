@@ -52,12 +52,7 @@ class APITimeoutError(APIError):
 class APIRateLimitError(APIError):
     """Raised when API rate limit is exceeded."""
 
-    def __init__(
-        self,
-        message: str,
-        retry_after: Optional[int] = None,
-        context: Optional[Dict[str, Any]] = None
-    ):
+    def __init__(self, message: str, retry_after: Optional[int] = None, context: Optional[Dict[str, Any]] = None):
         """Initialize with retry information.
 
         Args:
@@ -77,7 +72,7 @@ class APIResponseError(APIError):
         message: str,
         status_code: Optional[int] = None,
         response_body: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ):
         """Initialize with response information.
 
@@ -101,12 +96,7 @@ class JudgingError(LLMJudgeException):
 class JudgeParsingError(JudgingError):
     """Raised when judge response cannot be parsed."""
 
-    def __init__(
-        self,
-        message: str,
-        raw_response: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
-    ):
+    def __init__(self, message: str, raw_response: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
         """Initialize with raw response.
 
         Args:
@@ -133,12 +123,7 @@ class RepositoryError(LLMJudgeException):
 class ArtifactSaveError(RepositoryError):
     """Raised when artifact cannot be saved."""
 
-    def __init__(
-        self,
-        message: str,
-        file_path: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
-    ):
+    def __init__(self, message: str, file_path: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
         """Initialize with file information.
 
         Args:
@@ -154,11 +139,7 @@ class ValidationError(LLMJudgeException):
     """Raised when input validation fails."""
 
     def __init__(
-        self,
-        message: str,
-        field: Optional[str] = None,
-        value: Any = None,
-        context: Optional[Dict[str, Any]] = None
+        self, message: str, field: Optional[str] = None, value: Any = None, context: Optional[Dict[str, Any]] = None
     ):
         """Initialize with validation details.
 

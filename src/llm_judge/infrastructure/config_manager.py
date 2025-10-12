@@ -101,10 +101,10 @@ class ConfigurationManager(IConfigurationManager):
             # Load based on file extension
             suffix = self._config_file.suffix.lower()
 
-            with open(self._config_file, 'r', encoding='utf-8') as f:
-                if suffix in {'.yaml', '.yml'}:
+            with open(self._config_file, "r", encoding="utf-8") as f:
+                if suffix in {".yaml", ".yml"}:
                     data = yaml.safe_load(f)
-                elif suffix == '.json':
+                elif suffix == ".json":
                     data = json.load(f)
                 else:
                     raise ValueError(f"Unsupported configuration file format: {suffix}")
@@ -155,10 +155,7 @@ class SingletonConfigurationManager:
 
     @classmethod
     def get_instance(
-        cls,
-        config_file: Optional[Path] = None,
-        auto_reload: bool = False,
-        force_reload: bool = False
+        cls, config_file: Optional[Path] = None, auto_reload: bool = False, force_reload: bool = False
     ) -> ConfigurationManager:
         """Get or create singleton instance.
 
@@ -169,10 +166,7 @@ class SingletonConfigurationManager:
         """
         with cls._lock:
             if cls._instance is None or force_reload:
-                cls._instance = ConfigurationManager(
-                    config_file=config_file,
-                    auto_reload=auto_reload
-                )
+                cls._instance = ConfigurationManager(config_file=config_file, auto_reload=auto_reload)
             return cls._instance
 
     @classmethod

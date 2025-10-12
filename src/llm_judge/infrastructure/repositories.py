@@ -111,13 +111,7 @@ class ResultsRepository(IResultsRepository):
 class UnitOfWork(IUnitOfWork):
     """Unit of Work pattern for coordinating repository operations."""
 
-    def __init__(
-        self,
-        run_directory: Path,
-        csv_path: Path,
-        csv_fieldnames: List[str],
-        fs_service: IFileSystemService
-    ):
+    def __init__(self, run_directory: Path, csv_path: Path, csv_fieldnames: List[str], fs_service: IFileSystemService):
         """Initialize unit of work.
 
         Args:

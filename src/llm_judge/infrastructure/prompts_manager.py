@@ -26,7 +26,7 @@ class PromptsManager(IPromptsManager):
                 return self._prompts_cache
 
             if self._prompts_file:
-                with open(self._prompts_file, 'r', encoding='utf-8') as f:
+                with open(self._prompts_file, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
             else:
                 # Default to package resource
@@ -46,9 +46,7 @@ class PromptsManager(IPromptsManager):
         prompts_list = data.get("core_prompts", [])
 
         return [
-            Prompt(text=text, category="core", index=i)
-            for i, text in enumerate(prompts_list)
-            if isinstance(text, str)
+            Prompt(text=text, category="core", index=i) for i, text in enumerate(prompts_list) if isinstance(text, str)
         ]
 
     def get_follow_up(self) -> str:

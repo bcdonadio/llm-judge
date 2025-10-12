@@ -1,334 +1,836 @@
-# LLM Judge - Refactored Object-Oriented Architecture
+# LLM Judge Architecture Documentation
+
+This document describes the object-oriented architecture of the LLM Judge project, including design patterns, thread-safety guarantees, and best practices.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Core Principles](#core-principles)
+- [Architecture Layers](#architecture-layers)
+- [Design Patterns](#design-patterns)
+- [Thread Safety](#thread-safety)
+- [Dependency Injection](#dependency-injection)
+- [Migration Guide](#migration-guide)
+- [Usage Examples](#usage-examples)
 
 ## Overview
 
-This document outlines the refactored architecture for the LLM Judge project, transforming it from a procedural design with global state to a fully object-oriented, thread-safe architecture following SOLID principles and design patterns.
+The LLM Judge codebase has been refactored from a procedural, global-state-based design to a fully object-oriented architecture with:
 
-## Core Design Principles
+- **Zero global state**: All state is encapsulated in classes
+- **Complete thread-safety**: All services use proper locking mechanisms
+- **Dependency injection**: Protocol-based interfaces enable testability
+- **SOLID principles**: Clean separation of concerns throughout
+- **Repository pattern**: Clean data access layer
+- **Error handling**: Custom exception hierarchy with structured context
+- **Backward compatibility**: Legacy code continues to work
 
-1. **Dependency Injection** - All dependencies are injected, no hard-coded imports
-2. **Thread Safety** - All shared resources are properly synchronized
-3. **SOLID Principles** - Single responsibility, open/closed, interface segregation
-4. **No Global State** - Everything is encapsulated in classes
-5. **Testability** - All components are easily mockable and testable
+## Core Principles
+
+### 1. **No Global State**
+
+All module-level global variables have been eliminated. Instead:
+
+```python
+# ❌ Old approach (global state)
+_client = None
+_http_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        _client = OpenAI(...)
+    return _client
+
+# ✅ New approach (encapsulated state)
+class OpenRouterClient:
+    def __init__(self, api_key: str):
+        self._client: Optional[OpenAI] = None
+        self._lock = threading.RLock()
+
+    def _ensure_client(self) -> OpenAI:
+        with self._lock:
+            if self._client is None:
+                self._client = OpenAI(...)
+            return self._client
+```
+
+### 2. **Thread Safety**
+
+All shared state is protected using `threading.RLock()`:
+
+```python
+class PromptsManager:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._prompts_cache: Optional[Dict[str, Any]] = None
+
+    def _load_prompts(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._prompts_cache is not None:
+                return self._prompts_cache
+            # Load and cache prompts
+            self._prompts_cache = data
+            return data
+```
+
+### 3. **Dependency Injection**
+
+Services depend on abstract `Protocol` interfaces rather than concrete implementations:
+
+```python
+# Define interface
+class IAPIClient(Protocol):
+    def chat_completion(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        metadata: Dict[str, str],
+    ) -> ModelResponse: ...
+
+# Inject dependency
+class JudgeService:
+    def __init__(self, api_client: IAPIClient):
+        self._api_client = api_client
+```
 
 ## Architecture Layers
 
-### 1. Domain Layer
-Pure business logic with no external dependencies.
+### Domain Layer (`src/llm_judge/domain/`)
+
+Immutable data transfer objects representing core business concepts:
+
+- **`Prompt`**: A prompt with text, category, and index
+- **`ModelResponse`**: API response with text, payload, and finish reason
+- **`JudgeDecision`**: Evaluation results with completeness, refusal flags, etc.
+- **`RunConfiguration`**: Immutable configuration for a test run
+- **`RunArtifacts`**: Results of a completed run
 
 ```python
-# src/llm_judge/domain/models.py
-@dataclass
-class Prompt:
+@dataclass(frozen=True)
+class ModelResponse:
     text: str
-    category: str
-    index: int
-
-@dataclass
-class JudgeDecision:
-    initial_refusal: bool
-    initial_completeness: float
-    follow_refusal: bool
-    follow_completeness: float
-    asymmetry: str
-    notes: str
-
-@dataclass
-class RunConfiguration:
-    models: List[str]
-    judge_model: str
-    max_tokens: int
-    temperature: float
-    # ... other fields
+    raw_payload: Dict[str, Any]
+    finish_reason: Optional[str] = None
 ```
 
-### 2. Application Services Layer
-Business logic orchestration with dependency injection.
+### Service Layer (`src/llm_judge/services/`)
+
+Protocol interfaces defining contracts for all services:
+
+- **`IAPIClient`**: HTTP communication with LLM APIs
+- **`IPromptsManager`**: Prompt loading and management
+- **`IJudgeService`**: Response evaluation logic
+- **`IConfigurationManager`**: Configuration management
+- **`IArtifactsRepository`**: Artifact persistence
+- **`IResultsRepository`**: Results CSV persistence
+- **`IUnitOfWork`**: Transaction coordination
+
+### Infrastructure Layer (`src/llm_judge/infrastructure/`)
+
+Concrete implementations of service interfaces:
+
+#### API Client (`api_client.py`)
 
 ```python
-# src/llm_judge/services/interfaces.py
-from typing import Protocol
+class OpenRouterClient(IAPIClient):
+    """Thread-safe HTTP client with connection pooling."""
 
-class IAPIClient(Protocol):
-    """Interface for API communication"""
-    def chat_completion(self, model: str, messages: List[Dict], **kwargs) -> Dict:
-        ...
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://openrouter.ai/api/v1",
+        timeout: int = 120,
+        max_retries: int = 2,
+    ):
+        self._lock = threading.RLock()
+        self._client: Optional[OpenAI] = None
+        self._http_client: Optional[httpx.Client] = None
 
-class IPromptsManager(Protocol):
-    """Interface for prompt management"""
+    def chat_completion(...) -> ModelResponse:
+        client = self._ensure_client()
+        with self._lock:
+            response = client.chat.completions.create(...)
+        return ModelResponse(...)
+```
+
+**Features:**
+
+- Lazy initialization with double-checked locking
+- HTTP/2 connection pooling via `httpx`
+- Proper resource cleanup with context manager
+- Structured logging with request/response details
+
+#### Prompts Manager (`prompts_manager.py`)
+
+```python
+class PromptsManager(IPromptsManager):
+    """Thread-safe prompt loading without global cache."""
+
     def get_core_prompts(self) -> List[Prompt]:
-        ...
-    def get_follow_up(self) -> str:
-        ...
+        """Returns domain objects, not raw strings."""
+        data = self._load_prompts()
+        return [Prompt(text=t, category="core", index=i)
+                for i, t in enumerate(data["core_prompts"])]
+```
 
-class IJudgeService(Protocol):
-    """Interface for judging logic"""
-    def evaluate(self, prompt: str, initial: str, follow: str) -> JudgeDecision:
-        ...
+**Features:**
 
-class IConfigurationManager(Protocol):
-    """Interface for configuration management"""
-    def get(self, key: str) -> Any:
-        ...
+- Thread-safe instance-level caching
+- Explicit `reload()` method for cache invalidation
+- Returns immutable domain objects
+
+#### Judge Service (`judge_service.py`)
+
+```python
+class JudgeService(IJudgeService):
+    """Thread-safe evaluation service."""
+
+    def evaluate(
+        self,
+        prompt: str,
+        initial_response: ModelResponse,
+        follow_response: ModelResponse,
+        config: RunConfiguration,
+    ) -> JudgeDecision:
+        # Build messages, request judgment, parse response
+        # Returns structured JudgeDecision with error handling
+```
+
+**Features:**
+
+- Retry logic with exponential backoff for token limits
+- Robust JSON parsing from noisy responses
+- Error decisions instead of raising exceptions
+- Structured logging
+
+#### Configuration Manager (`config_manager.py`)
+
+```python
+class ConfigurationManager(IConfigurationManager):
+    """Thread-safe configuration with YAML/JSON and env vars."""
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Supports dot notation: config.get('api.timeout')"""
+
     def set(self, key: str, value: Any) -> None:
-        ...
+        """Thread-safe updates with lock protection."""
+
+    def merge(self, updates: Dict[str, Any]) -> None:
+        """Deep merge configuration updates."""
 ```
 
-### 3. Infrastructure Layer
-Concrete implementations with external dependencies.
+**Features:**
+
+- Dot notation for nested keys
+- Environment variable overrides
+- Deep merge capabilities
+- Thread-safe singleton pattern
+
+### Repository Layer (`repositories.py`)
+
+Implements the Repository and Unit of Work patterns:
 
 ```python
-# src/llm_judge/infrastructure/api_client.py
-class OpenRouterClient:
-    """Thread-safe API client with connection pooling"""
+class ArtifactsRepository(IArtifactsRepository):
+    """Stores completion and judge artifacts as JSON."""
 
-    def __init__(self, api_key: str, base_url: str,
-                 pool_size: int = 10, timeout: int = 120):
-        self._api_key = api_key
-        self._base_url = base_url
-        self._lock = threading.RLock()
-        self._pool = ConnectionPool(size=pool_size)
-        self._timeout = timeout
+    def save_completion(
+        self,
+        model: str,
+        prompt_index: int,
+        step: str,
+        data: Dict[str, Any],
+    ) -> Path:
+        """Returns path to saved artifact."""
 
-    def chat_completion(self, model: str, messages: List[Dict], **kwargs) -> Dict:
-        with self._lock:
-            connection = self._pool.get_connection()
-        try:
-            return self._execute_request(connection, model, messages, **kwargs)
-        finally:
-            self._pool.release_connection(connection)
+class ResultsRepository(IResultsRepository):
+    """Thread-safe CSV writer with buffering."""
 
-# src/llm_judge/infrastructure/prompts_manager.py
-class PromptsManager:
-    """Thread-safe prompts management"""
+    def add_result(self, row: Dict[str, Any]) -> None:
+        """Append row to CSV."""
 
-    def __init__(self, prompts_path: Path):
-        self._lock = threading.RLock()
-        self._prompts_cache: Optional[Dict] = None
-        self._prompts_path = prompts_path
+class UnitOfWork(IUnitOfWork):
+    """Coordinates repositories in a transaction."""
 
-    def get_core_prompts(self) -> List[Prompt]:
-        with self._lock:
-            if self._prompts_cache is None:
-                self._load_prompts()
-            return self._prompts_cache['core_prompts']
-
-# src/llm_judge/infrastructure/judge_service.py
-class JudgeService:
-    """Judge evaluation service"""
-
-    def __init__(self, api_client: IAPIClient, config_manager: IConfigurationManager):
-        self._api_client = api_client
-        self._config = config_manager
-        self._lock = threading.RLock()
-
-    def evaluate(self, prompt: str, initial: str, follow: str) -> JudgeDecision:
-        with self._lock:
-            # Implementation here
-            pass
-```
-
-### 4. Dependency Injection Container
-
-```python
-# src/llm_judge/container.py
-class ServiceContainer:
-    """Thread-safe dependency injection container"""
-
-    def __init__(self):
-        self._services: Dict[Type, Any] = {}
-        self._factories: Dict[Type, Callable] = {}
-        self._lock = threading.RLock()
-
-    def register_singleton(self, interface: Type, instance: Any) -> None:
-        """Register a singleton service"""
-        with self._lock:
-            self._services[interface] = instance
-
-    def register_factory(self, interface: Type, factory: Callable) -> None:
-        """Register a factory for creating instances"""
-        with self._lock:
-            self._factories[interface] = factory
-
-    def resolve(self, interface: Type) -> Any:
-        """Resolve a service by interface"""
-        with self._lock:
-            if interface in self._services:
-                return self._services[interface]
-            if interface in self._factories:
-                return self._factories[interface]()
-            raise ValueError(f"No registration for {interface}")
-
-# Usage
-container = ServiceContainer()
-container.register_singleton(IAPIClient, OpenRouterClient(api_key, base_url))
-container.register_singleton(IPromptsManager, PromptsManager(prompts_path))
-container.register_singleton(IJudgeService, JudgeService(
-    container.resolve(IAPIClient),
-    container.resolve(IConfigurationManager)
-))
-```
-
-### 5. Repository Pattern for Data Access
-
-```python
-# src/llm_judge/repositories/interfaces.py
-class IRunRepository(Protocol):
-    """Interface for run data persistence"""
-    def save_run(self, run: RunArtifacts) -> None:
-        ...
-    def get_run(self, run_id: str) -> Optional[RunArtifacts]:
-        ...
-
-# src/llm_judge/repositories/file_repository.py
-class FileRunRepository:
-    """File-based run repository"""
-
-    def __init__(self, base_path: Path):
-        self._base_path = base_path
-        self._lock = threading.RLock()
-
-    def save_run(self, run: RunArtifacts) -> None:
-        with self._lock:
-            # Save to JSON files
-            pass
-```
-
-### 6. Unit of Work Pattern
-
-```python
-# src/llm_judge/uow.py
-class UnitOfWork:
-    """Manages transactions across repositories"""
-
-    def __init__(self, run_repo: IRunRepository, result_repo: IResultRepository):
-        self.runs = run_repo
-        self.results = result_repo
-        self._lock = threading.RLock()
-
-    def __enter__(self):
+    def __enter__(self) -> UnitOfWork:
         return self
 
-    def __exit__(self, *args):
-        self.rollback()
-
-    def commit(self):
-        with self._lock:
-            # Commit all changes
-            pass
-
-    def rollback(self):
-        with self._lock:
-            # Rollback changes
-            pass
+    def __exit__(self, *args) -> None:
+        if no_exception:
+            self.commit()
+        self.results.close()
 ```
 
-### 7. Factory Patterns
+### Factory Layer (`factories.py`)
+
+Factory classes for complex object creation:
 
 ```python
-# src/llm_judge/factories.py
 class RunnerFactory:
-    """Factory for creating configured runners"""
+    """Creates LLMJudgeRunner with DI."""
 
     def __init__(self, container: ServiceContainer):
         self._container = container
 
-    def create_runner(self, config: RunnerConfig) -> LLMJudgeRunner:
+    def create_runner(
+        self,
+        config: RunnerConfig,
+        control: Optional[RunnerControl] = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> LLMJudgeRunner:
+        # Resolve services from container
+        api_client = self._container.resolve(IAPIClient)
+        judge_service = self._container.resolve(IJudgeService)
+        prompts_manager = self._container.resolve(IPromptsManager)
+
         return LLMJudgeRunner(
-            config=config,
-            api_client=self._container.resolve(IAPIClient),
-            judge_service=self._container.resolve(IJudgeService),
-            prompts_manager=self._container.resolve(IPromptsManager),
-            uow=self._container.resolve(UnitOfWork)
+            config,
+            api_client=api_client,
+            judge_service=judge_service,
+            prompts_manager=prompts_manager,
+            control=control,
+            progress_callback=progress_callback,
         )
-
-class ConfigurationBuilder:
-    """Builder pattern for complex configurations"""
-
-    def __init__(self):
-        self._config = {}
-
-    def with_models(self, models: List[str]) -> 'ConfigurationBuilder':
-        self._config['models'] = models
-        return self
-
-    def with_judge_model(self, model: str) -> 'ConfigurationBuilder':
-        self._config['judge_model'] = model
-        return self
-
-    def build(self) -> RunConfiguration:
-        return RunConfiguration(**self._config)
 ```
 
-### 8. Web Application Integration
+## Design Patterns
+
+### 1. **Dependency Injection Container**
+
+The `ServiceContainer` manages service lifetimes and dependencies:
 
 ```python
-# src/llm_judge/webapp/app_factory.py
-class ApplicationFactory:
-    """Factory for creating Flask applications with DI"""
+# Register services
+container.register_singleton(IAPIClient, lambda: OpenRouterClient(api_key))
+container.register_factory(IUnitOfWork, lambda: create_unit_of_work())
 
-    @staticmethod
-    def create_app(container: ServiceContainer) -> Flask:
-        app = Flask(__name__)
-
-        # Store container in app context
-        app.container = container
-
-        # Register blueprints with injected dependencies
-        api_bp = create_api_blueprint(container)
-        app.register_blueprint(api_bp)
-
-        return app
-
-# src/llm_judge/webapp/blueprints.py
-def create_api_blueprint(container: ServiceContainer) -> Blueprint:
-    api = Blueprint('api', __name__)
-
-    @api.route('/run', methods=['POST'])
-    def start_run():
-        runner_factory = container.resolve(RunnerFactory)
-        config = request.get_json()
-        runner = runner_factory.create_runner(config)
-        # ... handle run
-
-    return api
+# Resolve services
+api_client = container.resolve(IAPIClient)
 ```
 
-## Migration Strategy
+### 2. **Factory Pattern**
 
-### Phase 1: Create New Structure
-1. Create domain models and interfaces
-2. Implement infrastructure classes
-3. Set up dependency injection container
+Factories encapsulate complex object creation:
 
-### Phase 2: Refactor Core Modules
-1. Replace global API client with OpenRouterClient class
-2. Replace prompts module with PromptsManager
-3. Replace judging functions with JudgeService
+```python
+factory = RunnerFactory(container)
+runner = factory.create_runner(config)
+```
 
-### Phase 3: Refactor Runner
-1. Update LLMJudgeRunner to use dependency injection
-2. Implement repository pattern for data persistence
-3. Add unit of work for transactions
+### 3. **Builder Pattern**
 
-### Phase 4: Refactor Web Application
-1. Replace global Flask app with ApplicationFactory
-2. Inject dependencies into blueprints
-3. Update JobManager with proper DI
+Fluent API for configuration:
 
-### Phase 5: Testing & Documentation
-1. Create comprehensive unit tests
-2. Add integration tests for thread safety
-3. Update documentation
+```python
+config = (
+    ConfigurationBuilder()
+    .with_models(["model-1", "model-2"])
+    .with_judge_model("judge")
+    .with_outdir(Path("./results"))
+    .with_max_tokens(1000)
+    .build()
+)
+```
 
-## Benefits of New Architecture
+### 4. **Repository Pattern**
 
-1. **Thread Safety**: All shared resources properly synchronized
-2. **Testability**: Easy to mock dependencies for unit testing
-3. **Maintainability**: Clear separation of concerns
-4. **Extensibility**: Easy to add new implementations
-5. **No Global State**: Everything properly encapsulated
-6. **SOLID Compliance**: Follows all SOLID principles
-7. **Design Patterns**: Proper use of established patterns
-8. **Type Safety**: Full type hints and protocols
+Clean data access layer:
+
+```python
+artifacts_repo = ArtifactsRepository(run_dir, fs_service)
+path = artifacts_repo.save_completion(model, idx, "initial", data)
+```
+
+### 5. **Unit of Work Pattern**
+
+Transaction-like semantics:
+
+```python
+with UnitOfWork(...) as uow:
+    uow.artifacts.save_completion(...)
+    uow.results.add_result(...)
+    uow.commit()  # Auto-commits on success
+```
+
+### 6. **Protocol Pattern**
+
+Interface segregation:
+
+```python
+class IAPIClient(Protocol):
+    def chat_completion(...) -> ModelResponse: ...
+
+class IPromptsManager(Protocol):
+    def get_core_prompts(self) -> List[Prompt]: ...
+```
+
+## Thread Safety
+
+### Locking Strategy
+
+All shared state uses `threading.RLock()` (reentrant locks):
+
+```python
+class ThreadSafeService:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._cache = {}
+
+    def get(self, key):
+        with self._lock:
+            return self._cache.get(key)
+
+    def set(self, key, value):
+        with self._lock:
+            self._cache[key] = value
+```
+
+### Double-Checked Locking
+
+For expensive initializations:
+
+```python
+def _ensure_client(self) -> OpenAI:
+    with self._lock:
+        if self._client is None:
+            self._http_client = httpx.Client(...)
+            self._client = OpenAI(...)
+        return self._client
+```
+
+### Concurrent Access Guarantees
+
+- **OpenRouterClient**: Safe for concurrent `chat_completion()` calls
+- **PromptsManager**: Safe for concurrent `get_core_prompts()` and `reload()`
+- **JudgeService**: Safe for concurrent `evaluate()` calls
+- **ConfigurationManager**: Safe for concurrent reads and writes
+- **Repositories**: Safe for concurrent saves and writes
+- **UnitOfWork**: Each instance is isolated (not shared across threads)
+
+## Dependency Injection
+
+### Creating the Container
+
+```python
+from llm_judge.container import create_container
+
+# With defaults
+container = create_container()
+
+# With custom config
+container = create_container({"config_file": "path/to/config.yaml"})
+```
+
+### Resolving Services
+
+```python
+# Resolve by protocol interface
+api_client = container.resolve(IAPIClient)
+prompts_manager = container.resolve(IPromptsManager)
+judge_service = container.resolve(IJudgeService)
+
+# Cleanup when done
+container.clear()
+```
+
+### Using with Webapp
+
+```python
+from llm_judge.webapp import create_app
+
+# DI-based webapp
+app = create_app(container=container)
+```
+
+## Migration Guide
+
+### From Legacy API Client
+
+**Before:**
+
+```python
+from llm_judge.api import openrouter_chat
+
+response = openrouter_chat(
+    model="test-model",
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=100,
+    temperature=0.7,
+    metadata={"title": "Test"},
+)
+text = extract_text(response)
+```
+
+**After:**
+
+```python
+from llm_judge.container import create_container
+from llm_judge.services import IAPIClient
+
+container = create_container()
+api_client = container.resolve(IAPIClient)
+
+response = api_client.chat_completion(
+    model="test-model",
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=100,
+    temperature=0.7,
+    metadata={"title": "Test"},
+)
+text = response.text  # ModelResponse object
+```
+
+### From Legacy Prompts
+
+**Before:**
+
+```python
+from llm_judge.prompts import CORE_PROMPTS, FOLLOW_UP
+
+for prompt in CORE_PROMPTS:
+    # Use prompt string
+```
+
+**After:**
+
+```python
+from llm_judge.container import create_container
+from llm_judge.services import IPromptsManager
+
+container = create_container()
+prompts_manager = container.resolve(IPromptsManager)
+
+prompts = prompts_manager.get_core_prompts()
+for prompt in prompts:
+    # Use prompt.text (Prompt domain object)
+
+follow_up = prompts_manager.get_follow_up()
+```
+
+### From Legacy Judge
+
+**Before:**
+
+```python
+from llm_judge.judging import judge_decide
+
+result = judge_decide(
+    judge_model="judge",
+    prompt="Question",
+    initial_resp="Answer 1",
+    follow_resp="Answer 2",
+    max_tokens=2000,
+    temperature=0.0,
+    meta={"title": "Test"},
+)
+ok = result["ok"]
+decision = result["decision"]
+```
+
+**After:**
+
+```python
+from llm_judge.container import create_container
+from llm_judge.services import IJudgeService
+from llm_judge.domain import ModelResponse, RunConfiguration
+
+container = create_container()
+judge_service = container.resolve(IJudgeService)
+
+config = RunConfiguration(
+    models=["test"],
+    judge_model="judge",
+    outdir=Path("./results"),
+    max_tokens=1000,
+    judge_max_tokens=2000,
+    temperature=0.7,
+    judge_temperature=0.0,
+    sleep_s=0.1,
+)
+
+initial = ModelResponse(text="Answer 1", raw_payload={})
+follow = ModelResponse(text="Answer 2", raw_payload={})
+
+decision = judge_service.evaluate(
+    prompt="Question",
+    initial_response=initial,
+    follow_response=follow,
+    config=config,
+)
+
+# decision is a JudgeDecision domain object
+if decision.success:
+    print(f"Completeness: {decision.initial_completeness}")
+```
+
+### From Legacy Runner
+
+**Before:**
+
+```python
+from llm_judge.runner import run_suite
+
+artifacts = run_suite(
+    models=["model-1"],
+    judge_model="judge",
+    outdir=Path("./results"),
+    max_tokens=1000,
+    judge_max_tokens=2000,
+    temperature=0.7,
+    judge_temperature=0.0,
+    sleep_s=0.1,
+    limit=1,
+    verbose=True,
+)
+```
+
+**After:**
+
+```python
+from llm_judge.container import create_container
+from llm_judge.factories import RunnerFactory
+from llm_judge.runner import RunnerConfig
+
+container = create_container()
+factory = RunnerFactory(container)
+
+config = RunnerConfig(
+    models=["model-1"],
+    judge_model="judge",
+    outdir=Path("./results"),
+    max_tokens=1000,
+    judge_max_tokens=2000,
+    temperature=0.7,
+    judge_temperature=0.0,
+    sleep_s=0.1,
+    limit=1,
+    verbose=True,
+)
+
+runner = factory.create_runner(config)
+artifacts = runner.run()
+
+container.clear()
+```
+
+## Usage Examples
+
+### Complete Example with DI
+
+```python
+import os
+from pathlib import Path
+from llm_judge.container import create_container
+from llm_judge.factories import RunnerFactory
+from llm_judge.runner import RunnerConfig
+from llm_judge.logging_config import configure_logging
+
+# Setup logging
+configure_logging(level="INFO", log_file=Path("llm-judge.log"))
+
+# Set API key
+os.environ['OPENROUTER_API_KEY'] = 'your-key-here'
+
+# Create DI container
+container = create_container()
+
+# Create runner via factory
+factory = RunnerFactory(container)
+config = RunnerConfig(
+    models=["qwen/qwen3-next-80b-a3b-instruct"],
+    judge_model="x-ai/grok-4-fast",
+    outdir=Path("./results"),
+    max_tokens=1000,
+    judge_max_tokens=2000,
+    temperature=0.7,
+    judge_temperature=0.0,
+    sleep_s=0.5,
+    limit=5,
+    verbose=True,
+    use_color=True,
+)
+
+# Run with error handling
+from llm_judge.exceptions import APIError, JudgingError
+
+try:
+    runner = factory.create_runner(config)
+    artifacts = runner.run()
+
+    print(f"Results: {artifacts.csv_path}")
+    print(f"Runs: {artifacts.runs_dir}")
+
+except APIError as e:
+    print(f"API Error: {e} (context: {e.context})")
+except JudgingError as e:
+    print(f"Judging Error: {e}")
+finally:
+    container.clear()
+```
+
+### Using with Unit of Work
+
+```python
+from llm_judge.infrastructure.repositories import UnitOfWork
+from llm_judge.infrastructure.utility_services import FileSystemService
+
+fs_service = FileSystemService()
+
+with UnitOfWork(
+    run_directory=Path("./run"),
+    csv_path=Path("./results.csv"),
+    csv_fieldnames=["model", "score"],
+    fs_service=fs_service,
+) as uow:
+    # Save artifacts
+    path1 = uow.artifacts.save_completion(
+        model="test-model",
+        prompt_index=0,
+        step="initial",
+        data={"content": "Test"},
+    )
+
+    # Add results
+    uow.results.add_result({"model": "test-model", "score": "5"})
+
+    # Commit (or auto-commits on __exit__ if no exception)
+    uow.commit()
+```
+
+### Custom Configuration
+
+```python
+from llm_judge.infrastructure.config_manager import ConfigurationManager
+
+# From file
+config_manager = ConfigurationManager(Path("config.yaml"))
+
+# Get values (supports dot notation)
+timeout = config_manager.get("api.timeout", default=30)
+models = config_manager.get("models", default=[])
+
+# Set values
+config_manager.set("api.max_retries", 3)
+
+# Merge updates
+config_manager.merge({
+    "api": {"timeout": 60},
+    "new_section": {"key": "value"}
+})
+
+# Reload from disk
+config_manager.reload()
+```
+
+## Best Practices
+
+### 1. **Always Use DI Container**
+
+Don't instantiate services directly. Use the container:
+
+```python
+# ❌ Don't do this
+client = OpenRouterClient(api_key="...")
+
+# ✅ Do this
+container = create_container()
+client = container.resolve(IAPIClient)
+```
+
+### 2. **Clean Up Resources**
+
+Always clear the container when done:
+
+```python
+try:
+    container = create_container()
+    # Use services
+finally:
+    container.clear()
+```
+
+### 3. **Use Context Managers**
+
+For resources that need cleanup:
+
+```python
+# UnitOfWork
+with UnitOfWork(...) as uow:
+    # Work with repositories
+    uow.commit()
+
+# OpenRouterClient
+with OpenRouterClient(...) as client:
+    response = client.chat_completion(...)
+```
+
+### 4. **Handle Errors with Custom Exceptions**
+
+Use the exception hierarchy:
+
+```python
+from llm_judge.exceptions import (
+    APIError,
+    JudgingError,
+    ConfigurationError,
+)
+
+try:
+    response = api_client.chat_completion(...)
+except APIError as e:
+    logger.error(f"API failed: {e.message}, context: {e.context}")
+except JudgingError as e:
+    logger.error(f"Judge failed: {e.message}")
+```
+
+### 5. **Use Structured Logging**
+
+```python
+from llm_judge.logging_config import configure_logging, get_logger
+
+configure_logging(level="INFO")
+logger = get_logger(__name__)
+
+logger.info("Processing prompt", extra={
+    "model": "test-model",
+    "prompt_index": 0,
+})
+```
+
+## Testing
+
+The architecture supports easy testing via dependency injection:
+
+```python
+from unittest.mock import MagicMock
+
+# Mock the API client
+mock_client = MagicMock(spec=IAPIClient)
+mock_client.chat_completion.return_value = ModelResponse(
+    text="test", raw_payload={}
+)
+
+# Inject mock
+judge_service = JudgeService(api_client=mock_client)
+
+# Test without hitting real API
+decision = judge_service.evaluate(...)
+```
+
+See `tests/test_integration.py` for comprehensive thread-safety tests.
+
+## Conclusion
+
+The refactored architecture provides:
+
+- **Maintainability**: Clear separation of concerns
+- **Testability**: Easy mocking via protocols
+- **Thread-Safety**: Guaranteed concurrent access safety
+- **Flexibility**: Easy to swap implementations
+- **Performance**: Connection pooling and efficient caching
+- **Reliability**: Structured error handling
+
+All while maintaining **100% backward compatibility** with legacy code.

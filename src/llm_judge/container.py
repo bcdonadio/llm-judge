@@ -4,7 +4,7 @@ import os
 import threading
 from typing import Type, Any, Dict, Callable, TypeVar, Optional
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class ServiceContainer:
@@ -40,7 +40,7 @@ class ServiceContainer:
                 return instance
 
             # Check if it's a concrete class we can instantiate
-            if not hasattr(interface, '__abstractmethods__'):
+            if not hasattr(interface, "__abstractmethods__"):
                 try:
                     instance = interface()  # type: ignore[call-arg]
                     self._services[interface] = instance
@@ -55,7 +55,7 @@ class ServiceContainer:
         with self._lock:
             # Close any resources that have close methods
             for service in self._services.values():
-                if hasattr(service, 'close'):
+                if hasattr(service, "close"):
                     try:
                         service.close()
                     except Exception:  # pragma: no cover
@@ -74,8 +74,7 @@ def create_container(config: Optional[Dict[str, Any]] = None) -> ServiceContaine
     from .services import IConfigurationManager
 
     config_manager = ConfigurationManager(
-        config_file=config.get("config_file"),
-        auto_reload=config.get("auto_reload", False)
+        config_file=config.get("config_file"), auto_reload=config.get("auto_reload", False)
     )
     # Merge provided config into manager
     if config:
@@ -91,29 +90,21 @@ def create_container(config: Optional[Dict[str, Any]] = None) -> ServiceContaine
     from .infrastructure.api_client import OpenRouterClient
     from .services import IAPIClient
 
-    api_client = OpenRouterClient(
-        api_key=api_key,
-        base_url=config.get("base_url", "https://openrouter.ai/api/v1")
-    )
+    api_client = OpenRouterClient(api_key=api_key, base_url=config.get("base_url", "https://openrouter.ai/api/v1"))
     container.register_singleton(IAPIClient, api_client)
 
     # Register prompts manager
     from .infrastructure.prompts_manager import PromptsManager
     from .services import IPromptsManager
 
-    prompts_manager = PromptsManager(
-        prompts_file=config.get("prompts_file")
-    )
+    prompts_manager = PromptsManager(prompts_file=config.get("prompts_file"))
     container.register_singleton(IPromptsManager, prompts_manager)
 
     # Register judge service
     from .infrastructure.judge_service import JudgeService
     from .services import IJudgeService
 
-    judge_service = JudgeService(
-        api_client=api_client,
-        config_file=config.get("judge_config_file")
-    )
+    judge_service = JudgeService(api_client=api_client, config_file=config.get("judge_config_file"))
     container.register_singleton(IJudgeService, judge_service)
 
     # Register utility services

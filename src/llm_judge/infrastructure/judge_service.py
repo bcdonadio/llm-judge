@@ -17,10 +17,7 @@ class JudgeService(IJudgeService):
     """Thread-safe judge evaluation service."""
 
     def __init__(
-        self,
-        api_client: IAPIClient,
-        config_file: Optional[Path] = None,
-        logger: Optional[logging.Logger] = None
+        self, api_client: IAPIClient, config_file: Optional[Path] = None, logger: Optional[logging.Logger] = None
     ):
         self._api_client = api_client
         self._config_file = config_file
@@ -35,7 +32,7 @@ class JudgeService(IJudgeService):
                 return self._config_cache
 
             if self._config_file:
-                with open(self._config_file, 'r', encoding='utf-8') as f:
+                with open(self._config_file, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
             else:
                 resource = resources.files("llm_judge") / "judge_config.yaml"
@@ -49,22 +46,13 @@ class JudgeService(IJudgeService):
             return data
 
     def evaluate(
-        self,
-        prompt: str,
-        initial_response: ModelResponse,
-        follow_response: ModelResponse,
-        config: RunConfiguration
+        self, prompt: str, initial_response: ModelResponse, follow_response: ModelResponse, config: RunConfiguration
     ) -> JudgeDecision:
         """Evaluate responses and return judge decision."""
         judge_config = self._load_config()
 
         # Build evaluation messages
-        messages = self._build_messages(
-            judge_config,
-            prompt,
-            initial_response.text,
-            follow_response.text
-        )
+        messages = self._build_messages(judge_config, prompt, initial_response.text, follow_response.text)
 
         # Request judgment with retries
         max_attempts = 3
@@ -79,7 +67,7 @@ class JudgeService(IJudgeService):
                     max_tokens=current_max_tokens,
                     temperature=config.judge_temperature,
                     metadata={"title": "Judge Evaluation"},
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
                 )
 
                 # Parse JSON response
@@ -101,13 +89,7 @@ class JudgeService(IJudgeService):
 
         return self._create_error_decision("Max attempts exceeded")
 
-    def _build_messages(
-        self,
-        config: Dict[str, Any],
-        prompt: str,
-        initial: str,
-        follow: str
-    ) -> list[Dict[str, str]]:
+    def _build_messages(self, config: Dict[str, Any], prompt: str, initial: str, follow: str) -> list[Dict[str, str]]:
         """Build messages for judge evaluation."""
         system = config.get("system", "")
         schema = config.get("schema", {})
@@ -125,7 +107,7 @@ class JudgeService(IJudgeService):
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": full_instructions},
-            {"role": "user", "content": user_block}
+            {"role": "user", "content": user_block},
         ]
 
     @staticmethod
@@ -152,7 +134,7 @@ class JudgeService(IJudgeService):
                 elif text[i] == "}":
                     depth -= 1
                     if depth == 0:
-                        json_str = text[start:i + 1]
+                        json_str = text[start : i + 1]
                         return json.loads(json_str)
 
             raise ValueError("Invalid JSON structure")
@@ -186,7 +168,7 @@ class JudgeService(IJudgeService):
             safety_flags_follow=follow_flags,
             notes=str(data.get("final_notes", "")),
             raw_data=raw,
-            error=None
+            error=None,
         )
 
     @staticmethod
@@ -205,7 +187,7 @@ class JudgeService(IJudgeService):
             safety_flags_follow=[],
             notes=f"Error: {error}",
             raw_data={"error": error},
-            error=error
+            error=error,
         )
 
 

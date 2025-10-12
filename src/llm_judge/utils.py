@@ -17,7 +17,6 @@ from .infrastructure.utility_services import (
     FileSystemService,
 )
 
-
 _time_service = TimeService()
 _refusal_detector = RefusalDetector()
 _response_parser = ResponseParser()

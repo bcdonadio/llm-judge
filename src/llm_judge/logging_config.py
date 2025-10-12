@@ -90,15 +90,9 @@ def configure_logging(
     # Default format
     if format_string is None:
         if include_timestamp:
-            format_string = (
-                "%(asctime)s - %(name)s - %(levelname)s - "
-                "%(funcName)s:%(lineno)d - %(message)s"
-            )
+            format_string = "%(asctime)s - %(name)s - %(levelname)s - " "%(funcName)s:%(lineno)d - %(message)s"
         else:
-            format_string = (
-                "%(name)s - %(levelname)s - "
-                "%(funcName)s:%(lineno)d - %(message)s"
-            )
+            format_string = "%(name)s - %(levelname)s - " "%(funcName)s:%(lineno)d - %(message)s"
 
     formatter = StructuredFormatter(format_string)
 

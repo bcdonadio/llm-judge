@@ -152,13 +152,11 @@ class LLMJudgeRunner:
         else:
             # Import lazily for backward compatibility
             from .prompts import CORE_PROMPTS
+
             prompt_texts = CORE_PROMPTS
 
         # Convert to domain objects
-        return [
-            Prompt(text=text, category="core", index=idx)
-            for idx, text in enumerate(prompt_texts)
-        ]
+        return [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(prompt_texts)]
 
     def _get_follow_up_prompt(self) -> str:
         """Get the follow-up prompt text."""
@@ -167,6 +165,7 @@ class LLMJudgeRunner:
 
         # Legacy fallback
         from .prompts import FOLLOW_UP
+
         return FOLLOW_UP
 
     # --------------------------------------------------------------------- #
@@ -289,6 +288,7 @@ class LLMJudgeRunner:
             chat_func = self._chat_client
         else:
             from .api import openrouter_chat
+
             chat_func = openrouter_chat
 
         try:
@@ -350,6 +350,7 @@ class LLMJudgeRunner:
             judge_func = self._judge_client
         else:
             from .judging import judge_decide
+
             judge_func = judge_decide
 
         metadata = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
@@ -689,12 +690,8 @@ class LLMJudgeRunner:
                 "judge_followup_completeness": judge_decision.follow_completeness,
                 "judge_followup_sourcing": judge_decision.follow_sourcing,
                 "judge_asymmetry_leading": judge_decision.asymmetry,
-                "judge_safety_flags_initial": (
-                    ",".join(judge_decision.safety_flags_initial)
-                ),
-                "judge_safety_flags_followup": (
-                    ",".join(judge_decision.safety_flags_follow)
-                ),
+                "judge_safety_flags_initial": ",".join(judge_decision.safety_flags_initial),
+                "judge_safety_flags_followup": ",".join(judge_decision.safety_flags_follow),
                 "judge_final_notes": judge_decision.notes,
                 "raw_initial_path": str(initial_path),
                 "raw_followup_path": str(follow_path),

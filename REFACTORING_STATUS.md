@@ -7,34 +7,41 @@ This document tracks the progress of refactoring the LLM Judge codebase from a p
 ## Completed Work
 
 ### 1. Architecture Design ✅
+
 - Created comprehensive architecture documentation in `ARCHITECTURE.md`
 - Created detailed implementation plan in `REFACTORING_PLAN.md`
 - Defined clear separation between domain, services, and infrastructure layers
 
 ### 2. Domain Models ✅
+
 **Location:** `src/llm_judge/domain/__init__.py`
 
 Created immutable domain models using dataclasses:
+
 - `Prompt` - Represents a test prompt
 - `ModelResponse` - Encapsulates API response data
 - `JudgeDecision` - Contains evaluation results (updated with success/error fields)
 - `RunConfiguration` - Immutable configuration object
 
 **Benefits:**
+
 - Type-safe data structures
 - Immutable by design (frozen dataclasses)
 - Clear separation from infrastructure concerns
 
 ### 3. Service Interfaces ✅
+
 **Location:** `src/llm_judge/services/__init__.py`
 
 Created Protocol-based interfaces for dependency inversion:
+
 - `IAPIClient` - Interface for API communication
 - `IPromptsManager` - Interface for prompt management
 - `IJudgeService` - Interface for judging logic
 - `IConfigurationManager` - Interface for configuration
 
 **Benefits:**
+
 - Enables dependency injection
 - Easy to mock for testing
 - Follows dependency inversion principle
@@ -42,9 +49,11 @@ Created Protocol-based interfaces for dependency inversion:
 ### 4. Infrastructure Implementations ✅
 
 #### OpenRouterClient ✅
+
 **Location:** `src/llm_judge/infrastructure/api_client.py`
 
 **Key Features:**
+
 - Thread-safe with `threading.RLock()`
 - Lazy client initialization
 - HTTP/2 connection pooling via httpx
@@ -53,6 +62,7 @@ Created Protocol-based interfaces for dependency inversion:
 - No global state
 
 **Eliminated Global Variables:**
+
 ```python
 # OLD (api.py):
 _http_client: httpx.Client | None = None
@@ -66,9 +76,11 @@ self._lock = threading.RLock()
 ```
 
 #### PromptsManager ✅
+
 **Location:** `src/llm_judge/infrastructure/prompts_manager.py`
 
 **Key Features:**
+
 - Thread-safe caching with `threading.RLock()`
 - Lazy loading of YAML configuration
 - Returns domain objects (Prompt) not raw data
@@ -76,6 +88,7 @@ self._lock = threading.RLock()
 - Explicit reload() method for cache invalidation
 
 **Eliminated Global Variables:**
+
 ```python
 # OLD (prompts.py):
 @lru_cache(maxsize=1)
@@ -89,9 +102,11 @@ self._lock = threading.RLock()
 ```
 
 #### JudgeService ✅
+
 **Location:** `src/llm_judge/infrastructure/judge_service.py`
 
 **Key Features:**
+
 - Dependency injection (receives IAPIClient)
 - Thread-safe configuration caching
 - Retry logic with exponential token increase
@@ -99,6 +114,7 @@ self._lock = threading.RLock()
 - Returns domain objects (JudgeDecision)
 
 **Eliminated Global Variables:**
+
 ```python
 # OLD (judging.py):
 @lru_cache(maxsize=1)
@@ -116,15 +132,18 @@ self._lock = threading.RLock()
 ```
 
 ### 5. Dependency Injection Container ✅
+
 **Location:** `src/llm_judge/container.py`
 
 **Key Features:**
+
 - Thread-safe service registration and resolution
 - Supports singleton and factory patterns
 - Automatic resource cleanup
 - Type-safe with generics
 
 **Usage:**
+
 ```python
 from llm_judge.container import create_container
 
@@ -143,15 +162,18 @@ container.clear()  # Closes all resources
 ```
 
 ### 6. Runner Refactoring ✅
+
 **Location:** `src/llm_judge/runner.py`
 
 **Key Changes:**
+
 - Accepts injected dependencies (IAPIClient, IJudgeService, IPromptsManager)
 - Maintains backward compatibility with legacy function-based approach
 - Uses domain objects throughout (Prompt, JudgeDecision)
 - No direct imports of infrastructure (uses DI)
 
 **Dual Mode Operation:**
+
 ```python
 # New DI-based approach
 runner = LLMJudgeRunner(
@@ -166,16 +188,19 @@ runner = LLMJudgeRunner(config=config)  # Uses old functions internally
 ```
 
 ### 7. Factory Patterns ✅
+
 **Location:** `src/llm_judge/factories.py`
 
 Created two factory classes:
 
 #### RunnerFactory ✅
+
 - Creates fully configured runners with dependency injection
 - Resolves services from container
 - Simplifies runner instantiation
 
 **Usage:**
+
 ```python
 factory = RunnerFactory(container)
 runner = factory.create_runner(
@@ -186,11 +211,13 @@ runner = factory.create_runner(
 ```
 
 #### ConfigurationBuilder ✅
+
 - Fluent API for building configurations
 - Validates all parameters
 - Prevents invalid configurations
 
 **Usage:**
+
 ```python
 config = (
     ConfigurationBuilder()
@@ -206,12 +233,14 @@ config = (
 ## Architecture Benefits Achieved
 
 ### Thread Safety ✅
+
 - All shared resources protected by `threading.RLock()`
 - No global mutable state
 - Lazy initialization within locks
 - Proper resource cleanup
 
 ### SOLID Principles ✅
+
 - **Single Responsibility**: Each class has one clear purpose
 - **Open/Closed**: Easy to extend via interfaces
 - **Liskov Substitution**: Protocol-based interfaces
@@ -219,6 +248,7 @@ config = (
 - **Dependency Inversion**: Depend on abstractions (Protocols)
 
 ### Testability ✅
+
 - All dependencies injected
 - Easy to mock via Protocol interfaces
 - No hidden global state
@@ -227,65 +257,80 @@ config = (
 ## Remaining Work
 
 ### 8. Configuration Management
+
 **Priority:** Medium
 
 Create `ConfigurationManager` implementing `IConfigurationManager`:
+
 - Load from files, environment, defaults
 - Thread-safe access
 - Validation
 - Hot reload support
 
 ### 9. Webapp Module Refactoring
+
 **Priority:** High
 
 Update Flask application to:
+
 - Replace global `app` instance with `create_app()` factory
 - Inject ServiceContainer into blueprints
 - Use container to resolve dependencies
 - Maintain compatibility with existing endpoints
 
 **Current State:**
+
 - JobManager uses Runner directly
 - SSEBroker is already well-designed
 - Need to wire up container
 
 ### 10. Utils Module Refactoring
+
 **Priority:** Low
 
 Current `utils.py` contains standalone functions. Consider:
+
 - Keep simple utilities as pure functions (now_iso, detect_refusal)
 - Create service classes for complex utilities if needed
 - These utilities are largely stateless and work well as-is
 
 ### 11. Unit of Work Pattern
+
 **Priority:** Low
 
 For data persistence operations:
+
 - Coordinate CSV writing and JSON saving
 - Transaction-like behavior
 - Rollback on errors
 
 ### 12. Error Handling Architecture
+
 **Priority:** Medium
 
 Standardize error handling:
+
 - Custom exception hierarchy
 - Consistent logging
 - Error recovery strategies
 
 ### 13. Integration Tests
+
 **Priority:** High
 
 Create tests to verify:
+
 - Thread safety under concurrent load
 - Resource cleanup
 - Container lifecycle
 - End-to-end flows
 
 ### 14. Documentation Updates
+
 **Priority:** High
 
 Update documentation to reflect:
+
 - New architecture patterns
 - Migration guide for existing code
 - API usage examples
@@ -294,26 +339,31 @@ Update documentation to reflect:
 ## Migration Strategy
 
 ### Phase 1: Gradual Introduction ✅
+
 - New modules created alongside old code
 - No breaking changes to existing API
 - Can be tested independently
 
 ### Phase 2: Update Runner ✅
+
 - Modified runner to use new services
 - Kept old function signatures for compatibility
 - Both old and new approaches work
 
 ### Phase 3: Update Webapp (Next)
+
 - Refactor Flask app to use container
 - Maintain endpoint compatibility
 - Test with existing UI
 
 ### Phase 4: Deprecate Old Code
+
 - Mark old modules as deprecated
 - Provide migration guide
 - Set removal timeline
 
 ### Phase 5: Remove Old Code
+
 - Remove deprecated modules
 - Clean up imports
 - Final documentation update
@@ -396,6 +446,7 @@ for t in threads:
 ## Key Improvements Summary
 
 ### Before
+
 - Global `_client` and `_http_client` in api.py
 - Global `@lru_cache` in prompts.py and judging.py
 - Global Flask `app` instance
@@ -404,6 +455,7 @@ for t in threads:
 - Thread-safety unclear
 
 ### After
+
 - All state encapsulated in classes
 - Explicit thread safety with `threading.RLock()`
 - Dependency injection throughout
@@ -416,6 +468,7 @@ for t in threads:
 ## Files Created/Modified
 
 ### New Files
+
 - `src/llm_judge/domain/__init__.py` - Domain models
 - `src/llm_judge/services/__init__.py` - Service interfaces
 - `src/llm_judge/infrastructure/__init__.py` - Infrastructure exports
@@ -429,9 +482,11 @@ for t in threads:
 - `REFACTORING_STATUS.md` - This file
 
 ### Modified Files
+
 - `src/llm_judge/runner.py` - Added DI support while maintaining backward compatibility
 
 ### Unchanged (Legacy Compatibility)
+
 - `src/llm_judge/api.py` - Still works for legacy code
 - `src/llm_judge/prompts.py` - Still works for legacy code
 - `src/llm_judge/judging.py` - Still works for legacy code
@@ -452,6 +507,7 @@ for t in threads:
 ## Questions or Issues?
 
 For questions about the refactoring:
+
 1. Review ARCHITECTURE.md for design decisions
 2. Check REFACTORING_PLAN.md for implementation details
 3. See code comments in new modules for specifics
