@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Any, Dict, cast
+from typing import Any, Dict, Optional, Tuple, cast
 
 from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
@@ -11,6 +12,73 @@ from .job_manager import JobManager
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 frontend_bp = Blueprint("frontend", __name__)
+
+
+def _load_dotenv(env_path: Path) -> None:
+    """Load key=value pairs from a dotenv file without overriding existing values."""
+    if not env_path.is_file():
+        return
+
+    if _load_dotenv_with_library(env_path):
+        return
+
+    _load_dotenv_manual(env_path)
+
+
+def _load_dotenv_with_library(env_path: Path) -> bool:
+    """Load dotenv via python-dotenv if available. Return True on success."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return False
+    load_dotenv(env_path, override=False)
+    return True
+
+
+def _load_dotenv_manual(env_path: Path) -> None:
+    """Minimal .env parser for environments without python-dotenv installed."""
+    for raw_line in env_path.read_text().splitlines():
+        parsed = _parse_env_line(raw_line)
+        if not parsed:
+            continue
+        key, value = parsed
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+
+
+def _parse_env_line(raw_line: str) -> Optional[Tuple[str, str]]:
+    """Parse a single dotenv line into a key/value pair."""
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("export "):
+        line = line[len("export ") :].strip()
+    if "=" not in line:
+        return None
+
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+
+    value = _strip_inline_comment(_strip_quotes(value.strip()))
+    return key, value
+
+
+def _strip_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _strip_inline_comment(value: str) -> str:
+    if "#" not in value:
+        return value
+    for idx in range(1, len(value)):
+        if value[idx] == "#" and value[idx - 1].isspace():
+            return value[:idx].rstrip()
+    return value
 
 
 def _manager() -> JobManager:
@@ -129,6 +197,7 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
     app = Flask(__name__)
 
     project_root = Path(__file__).resolve().parents[3]
+    _load_dotenv(project_root / ".env")
     frontend_dist = project_root / "webui" / "dist"
 
     app_config = cast(Dict[str, Any], app.config)

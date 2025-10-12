@@ -424,6 +424,36 @@ def test_serve_cleanup_handles_errors(base_config: devstack.DevStackConfig, monk
     assert set(raised) == {base_config.pid_file, base_config.state_file}
 
 
+def test_run_devstack_handles_launch_failure(
+    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(devstack, "ensure_frontend_dependencies", _noop)
+
+    def fail_launch(
+        _config: devstack.DevStackConfig,
+        _backend_env: Dict[str, str],
+        _backend_log_handle: Any,
+        _frontend_log_handle: Any,
+        _controller: devstack.FileLogger,
+    ) -> tuple[subprocess.Popen[Any], subprocess.Popen[Any]]:
+        raise RuntimeError("frontend failed to start")
+
+    monkeypatch.setattr(devstack, "_launch_dev_servers", fail_launch)
+
+    terminates: List[str] = []
+
+    def record_terminate(proc: subprocess.Popen[Any], name: str, logger: devstack.FileLogger) -> None:
+        terminates.append(name)
+
+    monkeypatch.setattr(devstack, "terminate_process", record_terminate)
+
+    logger = make_logger(base_config.controller_log)
+    with pytest.raises(RuntimeError, match="frontend failed to start"):
+        devstack._run_devstack(base_config, logger)  # pyright: ignore[reportPrivateUsage]
+    logger.close()
+    assert terminates == []
+
+
 def test_start_devstack_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = devstack.DevStackConfig(
         project_root=tmp_path,
