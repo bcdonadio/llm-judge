@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-black fmt-eslint fmt-check fmt-check-black fmt-check-eslint lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test webui-test install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
+.PHONY: check fmt fmt-black fmt-eslint fmt-check fmt-check-black fmt-check-eslint lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test test-webui install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -83,11 +83,7 @@ lint-flake8:
 	$(UV_RUN) flake8 .
 
 lint-eslint:
-	@if [ -n "$$CI" ]; then \
-		cd webui && $(WEBUI_NPM) run lint:ci; \
-	else \
-		cd webui && $(WEBUI_NPM) run lint; \
-	fi
+	cd webui && $(WEBUI_NPM) run lint
 
 type: type-mypy type-pyright
 
@@ -97,15 +93,11 @@ type-mypy:
 type-pyright:
 	$(UV_RUN) pyright
 
-test: type webui-test
+test: type test-webui
 	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing --cov-report=json:coverage.json --junitxml=pytest-results.xml
 
-webui-test:
-	@if [ -n "$$CI" ]; then \
-		cd webui && $(WEBUI_NPM) ci; \
-	else \
-		cd webui && $(WEBUI_NPM) install; \
-	fi
+test-webui:
+	cd webui && $(WEBUI_NPM) run lint:ci
 	cd webui && $(WEBUI_NPM) run test
 
 check: fmt-check lint type test
