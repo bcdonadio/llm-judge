@@ -61,6 +61,7 @@ The `llm-judge` project evaluates how language models respond to a politically s
   4. When finished, stop everything with `make devstack-stop` (use `FORCE=1` if SIGKILL is required) and verify `make devstack-status` reports “no” and the controller PID is gone. This ensures no orphaned reloaders remain.
   5. Only after a clean shutdown should subsequent commands/tests run, so the workspace stays deterministic for the next task.
 
+- The devstack CLI `python -m llm_judge.devstack --help` prints the default values for every flag, including the built-in exclusion of `results/*` and `.devstack/*` from the Flask reloader. Supply `--backend-exclude-pattern` to override or extend this list when running locally.
 - Install dependencies with `make install` (uv extra `dev`).
 - Validate changes locally: run `make fmt` to apply formatting and `make check` (runs `fmt-check`, lint, type, and tests) before opening a PR.
 - Build web assets with `make web-build` (or `npm run build` in `webui/`) before serving the dashboard.

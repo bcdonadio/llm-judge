@@ -21,6 +21,7 @@ DEFAULT_STATE_FILE = DEFAULT_LOG_DIR / "state.json"
 DEFAULT_CONTROLLER_LOG = DEFAULT_LOG_DIR / "controller.log"
 DEFAULT_BACKEND_LOG = DEFAULT_LOG_DIR / "backend.log"
 DEFAULT_FRONTEND_LOG = DEFAULT_LOG_DIR / "frontend.log"
+DEFAULT_BACKEND_EXCLUDE_PATTERNS: tuple[str, ...] = ("results/*", ".devstack/*")
 FRONTEND_DIRNAME = "webui"
 
 SHUTDOWN_WAIT_SECONDS = 10.0
@@ -66,6 +67,7 @@ class DevStackConfig:
     controller_log: Path = DEFAULT_CONTROLLER_LOG
     backend_log: Path = DEFAULT_BACKEND_LOG
     frontend_log: Path = DEFAULT_FRONTEND_LOG
+    backend_exclude_patterns: tuple[str, ...] = DEFAULT_BACKEND_EXCLUDE_PATTERNS
 
 
 def _prepare_backend_env(config: DevStackConfig) -> Dict[str, str]:
@@ -154,6 +156,8 @@ def _launch_dev_servers(
         "--port",
         str(config.backend_port),
     ]
+    if config.backend_exclude_patterns:
+        backend_cmd.extend(["--exclude-patterns", ":".join(config.backend_exclude_patterns)])
     frontend_cmd = [
         config.npm_command,
         "run",
@@ -419,6 +423,8 @@ def start_devstack(config: DevStackConfig) -> int:
         "--project-root",
         str(config.project_root),
     ]
+    for pattern in config.backend_exclude_patterns:
+        cmd.extend(["--backend-exclude-pattern", pattern])
 
     proc = subprocess.Popen(
         cmd,
@@ -504,6 +510,11 @@ def status_devstack(config: DevStackConfig) -> int:
 
 
 def make_config(args: argparse.Namespace) -> DevStackConfig:
+    backend_exclude_patterns = (
+        tuple(args.backend_exclude_pattern)
+        if getattr(args, "backend_exclude_pattern", None)
+        else DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    )
     return DevStackConfig(
         backend_host=args.backend_host,
         backend_port=args.backend_port,
@@ -519,6 +530,7 @@ def make_config(args: argparse.Namespace) -> DevStackConfig:
         controller_log=Path(args.controller_log).resolve(),
         backend_log=Path(args.backend_log).resolve(),
         frontend_log=Path(args.frontend_log).resolve(),
+        backend_exclude_patterns=backend_exclude_patterns,
     )
 
 
@@ -527,20 +539,89 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_shared_arguments(subparser: argparse.ArgumentParser) -> None:
-        subparser.add_argument("--backend-host", default=DEFAULT_BACKEND_HOST)
-        subparser.add_argument("--backend-port", type=int, default=DEFAULT_BACKEND_PORT)
-        subparser.add_argument("--frontend-host", default=DEFAULT_FRONTEND_HOST)
-        subparser.add_argument("--frontend-port", type=int, default=DEFAULT_FRONTEND_PORT)
-        subparser.add_argument("--python-executable", default=sys.executable)
-        subparser.add_argument("--npm-command", default=os.environ.get("WEBUI_NPM", "npm"))
-        subparser.add_argument("--flask-app", default="llm_judge.webapp:create_app")
-        subparser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[2]))
-        subparser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
-        subparser.add_argument("--pid-file", default=str(DEFAULT_PID_FILE))
-        subparser.add_argument("--state-file", default=str(DEFAULT_STATE_FILE))
-        subparser.add_argument("--controller-log", default=str(DEFAULT_CONTROLLER_LOG))
-        subparser.add_argument("--backend-log", default=str(DEFAULT_BACKEND_LOG))
-        subparser.add_argument("--frontend-log", default=str(DEFAULT_FRONTEND_LOG))
+        subparser.add_argument(
+            "--backend-host",
+            default=DEFAULT_BACKEND_HOST,
+            help=f"Host interface for the Flask backend (default: {DEFAULT_BACKEND_HOST})",
+        )
+        subparser.add_argument(
+            "--backend-port",
+            type=int,
+            default=DEFAULT_BACKEND_PORT,
+            help=f"Port for the Flask backend (default: {DEFAULT_BACKEND_PORT})",
+        )
+        subparser.add_argument(
+            "--frontend-host",
+            default=DEFAULT_FRONTEND_HOST,
+            help=f"Host interface for the Vite dev server (default: {DEFAULT_FRONTEND_HOST})",
+        )
+        subparser.add_argument(
+            "--frontend-port",
+            type=int,
+            default=DEFAULT_FRONTEND_PORT,
+            help=f"Port for the Vite dev server (default: {DEFAULT_FRONTEND_PORT})",
+        )
+        subparser.add_argument(
+            "--python-executable",
+            default=sys.executable,
+            help=f"Python executable used for backend processes (default: {sys.executable})",
+        )
+        default_npm = os.environ.get("WEBUI_NPM", "npm")
+        subparser.add_argument(
+            "--npm-command",
+            default=default_npm,
+            help=f"npm-compatible command for frontend tasks (default: {default_npm})",
+        )
+        subparser.add_argument(
+            "--flask-app",
+            default="llm_judge.webapp:create_app",
+            help="Flask application import path (default: llm_judge.webapp:create_app)",
+        )
+        default_project_root = str(Path(__file__).resolve().parents[2])
+        subparser.add_argument(
+            "--project-root",
+            default=default_project_root,
+            help=f"Project root where backend/frontend live (default: {default_project_root})",
+        )
+        subparser.add_argument(
+            "--log-dir",
+            default=str(DEFAULT_LOG_DIR),
+            help=f"Directory for combined devstack logs (default: {DEFAULT_LOG_DIR})",
+        )
+        subparser.add_argument(
+            "--pid-file",
+            default=str(DEFAULT_PID_FILE),
+            help=f"Path for controller PID file (default: {DEFAULT_PID_FILE})",
+        )
+        subparser.add_argument(
+            "--state-file",
+            default=str(DEFAULT_STATE_FILE),
+            help=f"Path for runtime state file (default: {DEFAULT_STATE_FILE})",
+        )
+        subparser.add_argument(
+            "--controller-log",
+            default=str(DEFAULT_CONTROLLER_LOG),
+            help=f"Log file for controller events (default: {DEFAULT_CONTROLLER_LOG})",
+        )
+        subparser.add_argument(
+            "--backend-log",
+            default=str(DEFAULT_BACKEND_LOG),
+            help=f"Log file for Flask backend output (default: {DEFAULT_BACKEND_LOG})",
+        )
+        subparser.add_argument(
+            "--frontend-log",
+            default=str(DEFAULT_FRONTEND_LOG),
+            help=f"Log file for Vite frontend output (default: {DEFAULT_FRONTEND_LOG})",
+        )
+        subparser.add_argument(
+            "--backend-exclude-pattern",
+            action="append",
+            dest="backend_exclude_pattern",
+            help=(
+                "Pattern(s) to exclude from Flask reload monitoring (fnmatch syntax); "
+                f"defaults to {', '.join(DEFAULT_BACKEND_EXCLUDE_PATTERNS)}"
+            ),
+        )
 
     start_parser = subparsers.add_parser("start", help="Start the development stack in the background.")
     add_shared_arguments(start_parser)
