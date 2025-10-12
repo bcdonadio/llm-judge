@@ -6,6 +6,7 @@ PRECOMMIT_HOOK ?= .git/hooks/pre-commit
 WEBUI_NPM ?= npm
 GUNICORN ?= gunicorn
 GUNICORN_BIND ?= 0.0.0.0:5000
+GUNICORN_WORKER_CLASS ?= gevent
 GUNICORN_WORKERS ?= 1
 GUNICORN_WORKER_CONNECTIONS ?= 1000
 GUNICORN_PID_FILE ?= .gunicorn-web.pid
@@ -136,7 +137,7 @@ webd: web-build
 
 webdev:
 	@trap 'kill 0' EXIT INT TERM; \
-	PYTHONUNBUFFERED=1 $(UV_RUN) flask --app llm_judge.webapp:create_app run --debug --host 0.0.0.0 --port 5000 & \
+	PYTHONUNBUFFERED=1 $(UV_RUN) python -m gunicorn llm_judge.webapp:app --worker-class $(GUNICORN_WORKER_CLASS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --workers $(GUNICORN_WORKERS) --bind 0.0.0.0:5000 --reload & \
 	cd webui && $(WEBUI_NPM) install && $(WEBUI_NPM) run dev -- --host 0.0.0.0 --port 5173
 
 devstack-start:

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import signal
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Sequence, cast
@@ -331,10 +329,19 @@ def test_serve_backend_exit(base_config: devstack.DevStackConfig, monkeypatch: p
     assert devstack.signal.SIGTERM in handlers
     assert len(popen_calls) == 2
     backend_cmd = popen_calls[0]
-    assert "--exclude-patterns" in backend_cmd
-    exclude_arg = backend_cmd[backend_cmd.index("--exclude-patterns") + 1]
-    for pattern in devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS:
-        assert pattern in exclude_arg
+    assert backend_cmd[0:4] == [
+        base_config.python_executable,
+        "-m",
+        "gunicorn",
+        base_config.wsgi_app,
+    ]
+    assert "--reload" in backend_cmd
+    bind_arg = backend_cmd[backend_cmd.index("--bind") + 1]
+    assert bind_arg == f"{base_config.backend_host}:{base_config.backend_port}"
+    worker_class = backend_cmd[backend_cmd.index("--worker-class") + 1]
+    assert worker_class == base_config.gunicorn_worker_class
+    worker_connections = backend_cmd[backend_cmd.index("--worker-connections") + 1]
+    assert worker_connections == str(base_config.gunicorn_worker_connections)
 
 
 def test_serve_frontend_exit(base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -507,9 +514,9 @@ def test_start_devstack_success(
     assert "Development stack is running" in captured.out
     assert popen_kwargs["kwargs"]["start_new_session"] is True
     assert "serve" in popen_kwargs["cmd"]
-    assert popen_kwargs["cmd"].count("--backend-exclude-pattern") == len(devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS)
-    for pattern in devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS:
-        assert pattern in popen_kwargs["cmd"]
+    assert popen_kwargs["cmd"].count("--wsgi-app") == 1
+    wsgi_index = popen_kwargs["cmd"].index("--wsgi-app")
+    assert popen_kwargs["cmd"][wsgi_index + 1] == base_config.wsgi_app
 
 
 def test_start_devstack_timeout(
@@ -720,7 +727,7 @@ def test_make_config() -> None:
         frontend_port=2,
         python_executable="python",
         npm_command="npm",
-        flask_app="app:create",
+        wsgi_app="module:app",
         project_root=".",
         log_dir=".logs",
         pid_file=".pid",
@@ -733,100 +740,12 @@ def test_make_config() -> None:
     assert config.backend_host == "host"
     assert config.frontend_port == 2
     assert config.pid_file.name == ".pid"
-    assert config.backend_exclude_patterns == devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    assert config.wsgi_app == "module:app"
 
 
-def test_make_config_custom_patterns() -> None:
-    args = argparse.Namespace(
-        backend_host="host",
-        backend_port=1,
-        frontend_host="fhost",
-        frontend_port=2,
-        python_executable="python",
-        npm_command="npm",
-        flask_app="app:create",
-        project_root=".",
-        log_dir=".logs",
-        pid_file=".pid",
-        state_file=".state",
-        controller_log=".ctrl",
-        backend_log=".back",
-        frontend_log=".front",
-        backend_exclude_pattern=["tmp/*", "data/*"],
-    )
-    config = devstack.make_config(args)
-    defaults = devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
-    assert config.backend_exclude_patterns[: len(defaults)] == defaults
-    assert config.backend_exclude_patterns[-2:] == ("tmp/*", "data/*")
-
-
-def test_make_config_deduplicates_patterns() -> None:
-    args = argparse.Namespace(
-        backend_host="host",
-        backend_port=1,
-        frontend_host="fhost",
-        frontend_port=2,
-        python_executable="python",
-        npm_command="npm",
-        flask_app="app:create",
-        project_root=".",
-        log_dir=".logs",
-        pid_file=".pid",
-        state_file=".state",
-        controller_log=".ctrl",
-        backend_log=".back",
-        frontend_log=".front",
-        backend_exclude_pattern=["results/*", "extra/*"],
-    )
-    config = devstack.make_config(args)
-    patterns = config.backend_exclude_patterns
-    assert patterns.count("results/*") == 1
-    assert patterns[-1] == "extra/*"
-
-
-def test_default_backend_exclude_patterns_guardrails() -> None:
-    patterns = devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
-    assert "results/*" in patterns, "Flask reloader should ignore bulk results directory by default"
-    assert ".devstack/*" in patterns, "Flask reloader should ignore devstack runtime files by default"
-    assert all("*" in pattern or pattern.endswith("/") for pattern in patterns)
-
-
-def test_backend_exclude_patterns_match_sample_paths() -> None:
-    config = devstack.DevStackConfig()
-    samples = (
-        "results/runs/20250101/report.csv",
-        "results/results_20250101T010101Z.csv",
-        ".devstack/backend.log",
-        ".devstack/controller.log",
-    )
-    for sample in samples:
-        assert any(fnmatch.fnmatch(sample, pattern) for pattern in config.backend_exclude_patterns), sample
-
-
-def test_launch_dev_servers_without_excludes(
-    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = replace(base_config, backend_exclude_patterns=())
-    backend_cmd: list[str] = []
-    stubs = [StubProc([None]), StubProc([None])]
-
-    def fake_popen(cmd: list[str], **kwargs: Any) -> StubProc:
-        if not backend_cmd:
-            backend_cmd.extend(cmd)
-        return stubs.pop(0)
-
-    monkeypatch.setattr(devstack.subprocess, "Popen", fake_popen)
-    logger = make_logger(config.controller_log)
-    backend_env: Dict[str, str] = {}
-    with (
-        config.backend_log.open("w", encoding="utf-8") as backend_log_handle,
-        config.frontend_log.open("w", encoding="utf-8") as frontend_log_handle,
-    ):
-        devstack._launch_dev_servers(  # pyright: ignore[reportPrivateUsage]
-            config, backend_env, backend_log_handle, frontend_log_handle, logger
-        )
-    logger.close()
-    assert "--exclude-patterns" not in backend_cmd
+def test_parse_args_accepts_flask_alias() -> None:
+    args = devstack.parse_args(["start", "--flask-app", "module:create_app"])
+    assert args.wsgi_app == "module:create_app"
 
 
 def test_parse_args_commands() -> None:

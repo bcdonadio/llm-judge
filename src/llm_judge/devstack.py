@@ -9,7 +9,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, cast
 
 DEFAULT_BACKEND_HOST = "127.0.0.1"
 DEFAULT_BACKEND_PORT = 5000
@@ -21,7 +21,9 @@ DEFAULT_STATE_FILE = DEFAULT_LOG_DIR / "state.json"
 DEFAULT_CONTROLLER_LOG = DEFAULT_LOG_DIR / "controller.log"
 DEFAULT_BACKEND_LOG = DEFAULT_LOG_DIR / "backend.log"
 DEFAULT_FRONTEND_LOG = DEFAULT_LOG_DIR / "frontend.log"
-DEFAULT_BACKEND_EXCLUDE_PATTERNS: tuple[str, ...] = ("results/*", ".devstack/*")
+DEFAULT_GUNICORN_WORKER_CLASS = "gevent"
+DEFAULT_GUNICORN_WORKERS = 1
+DEFAULT_GUNICORN_WORKER_CONNECTIONS = 1000
 FRONTEND_DIRNAME = "webui"
 
 SHUTDOWN_WAIT_SECONDS = 10.0
@@ -59,7 +61,7 @@ class DevStackConfig:
     frontend_port: int = DEFAULT_FRONTEND_PORT
     python_executable: str = sys.executable
     npm_command: str = os.environ.get("WEBUI_NPM", "npm")
-    flask_app: str = "llm_judge.webapp:create_app"
+    wsgi_app: str = "llm_judge.webapp:app"
     project_root: Path = Path(__file__).resolve().parents[2]
     log_dir: Path = DEFAULT_LOG_DIR
     pid_file: Path = DEFAULT_PID_FILE
@@ -67,15 +69,14 @@ class DevStackConfig:
     controller_log: Path = DEFAULT_CONTROLLER_LOG
     backend_log: Path = DEFAULT_BACKEND_LOG
     frontend_log: Path = DEFAULT_FRONTEND_LOG
-    backend_exclude_patterns: tuple[str, ...] = DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    gunicorn_worker_class: str = DEFAULT_GUNICORN_WORKER_CLASS
+    gunicorn_workers: int = DEFAULT_GUNICORN_WORKERS
+    gunicorn_worker_connections: int = DEFAULT_GUNICORN_WORKER_CONNECTIONS
 
 
 def _prepare_backend_env(config: DevStackConfig) -> Dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault("FLASK_APP", config.flask_app)
-    env.setdefault("FLASK_ENV", "development")
-    env.setdefault("FLASK_DEBUG", "1")
     return env
 
 
@@ -142,22 +143,22 @@ def _launch_dev_servers(
     backend_log_handle: Any,
     frontend_log_handle: Any,
     controller: FileLogger,
-) -> Tuple[subprocess.Popen[Any], subprocess.Popen[Any]]:
+) -> tuple[subprocess.Popen[Any], subprocess.Popen[Any]]:
     backend_cmd = [
         config.python_executable,
         "-m",
-        "flask",
-        "--app",
-        config.flask_app,
-        "run",
-        "--debug",
-        "--host",
-        config.backend_host,
-        "--port",
-        str(config.backend_port),
+        "gunicorn",
+        config.wsgi_app,
+        "--worker-class",
+        config.gunicorn_worker_class,
+        "--workers",
+        str(config.gunicorn_workers),
+        "--worker-connections",
+        str(config.gunicorn_worker_connections),
+        "--bind",
+        f"{config.backend_host}:{config.backend_port}",
+        "--reload",
     ]
-    if config.backend_exclude_patterns:
-        backend_cmd.extend(["--exclude-patterns", ":".join(config.backend_exclude_patterns)])
     frontend_cmd = [
         config.npm_command,
         "run",
@@ -169,7 +170,7 @@ def _launch_dev_servers(
         str(config.frontend_port),
     ]
 
-    controller.log("Launching Flask development server")
+    controller.log("Launching Gunicorn development server")
     backend_proc = subprocess.Popen(
         backend_cmd,
         cwd=config.project_root,
@@ -422,9 +423,9 @@ def start_devstack(config: DevStackConfig) -> int:
         str(config.frontend_log),
         "--project-root",
         str(config.project_root),
+        "--wsgi-app",
+        config.wsgi_app,
     ]
-    for pattern in config.backend_exclude_patterns:
-        cmd.extend(["--backend-exclude-pattern", pattern])
 
     proc = subprocess.Popen(
         cmd,
@@ -449,7 +450,7 @@ def start_devstack(config: DevStackConfig) -> int:
     print(f"  controller pid       : {proc.pid}")
     print(f"  process group        : {proc.pid} (kill with `kill -- -{proc.pid}`)")
     print(f"  frontend (Svelte)    : {frontend_url}")
-    print(f"  backend (Flask API)  : {backend_url}")
+    print(f"  backend (API)        : {backend_url}")
     print(f"  debugger             : {debugger_url}")
     print(f"  frontend log         : {config.frontend_log}")
     print(f"  backend log          : {config.backend_log}")
@@ -510,24 +511,6 @@ def status_devstack(config: DevStackConfig) -> int:
 
 
 def make_config(args: argparse.Namespace) -> DevStackConfig:
-    raw_patterns = getattr(args, "backend_exclude_pattern", None)
-    provided_patterns: tuple[str, ...] = tuple(str(pattern) for pattern in raw_patterns) if raw_patterns else ()
-    if provided_patterns:
-        combined: list[str] = []
-        seen: set[str] = set()
-
-        def append_unique(patterns: tuple[str, ...]) -> None:
-            for pattern in patterns:
-                if pattern in seen:
-                    continue
-                combined.append(pattern)
-                seen.add(pattern)
-
-        append_unique(DEFAULT_BACKEND_EXCLUDE_PATTERNS)
-        append_unique(provided_patterns)
-        backend_exclude_patterns = tuple(combined)
-    else:
-        backend_exclude_patterns = DEFAULT_BACKEND_EXCLUDE_PATTERNS
     return DevStackConfig(
         backend_host=args.backend_host,
         backend_port=args.backend_port,
@@ -535,7 +518,7 @@ def make_config(args: argparse.Namespace) -> DevStackConfig:
         frontend_port=args.frontend_port,
         python_executable=args.python_executable,
         npm_command=args.npm_command,
-        flask_app=args.flask_app,
+        wsgi_app=args.wsgi_app,
         project_root=Path(args.project_root).resolve(),
         log_dir=Path(args.log_dir).resolve(),
         pid_file=Path(args.pid_file).resolve(),
@@ -543,7 +526,6 @@ def make_config(args: argparse.Namespace) -> DevStackConfig:
         controller_log=Path(args.controller_log).resolve(),
         backend_log=Path(args.backend_log).resolve(),
         frontend_log=Path(args.frontend_log).resolve(),
-        backend_exclude_patterns=backend_exclude_patterns,
     )
 
 
@@ -555,13 +537,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         subparser.add_argument(
             "--backend-host",
             default=DEFAULT_BACKEND_HOST,
-            help=f"Host interface for the Flask backend (default: {DEFAULT_BACKEND_HOST})",
+            help=f"Host interface for the backend API (default: {DEFAULT_BACKEND_HOST})",
         )
         subparser.add_argument(
             "--backend-port",
             type=int,
             default=DEFAULT_BACKEND_PORT,
-            help=f"Port for the Flask backend (default: {DEFAULT_BACKEND_PORT})",
+            help=f"Port for the backend API (default: {DEFAULT_BACKEND_PORT})",
         )
         subparser.add_argument(
             "--frontend-host",
@@ -586,9 +568,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             help=f"npm-compatible command for frontend tasks (default: {default_npm})",
         )
         subparser.add_argument(
+            "--wsgi-app",
             "--flask-app",
-            default="llm_judge.webapp:create_app",
-            help="Flask application import path (default: llm_judge.webapp:create_app)",
+            dest="wsgi_app",
+            default="llm_judge.webapp:app",
+            help="WSGI application import path for Gunicorn (default: llm_judge.webapp:app)",
         )
         default_project_root = str(Path(__file__).resolve().parents[2])
         subparser.add_argument(
@@ -619,21 +603,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         subparser.add_argument(
             "--backend-log",
             default=str(DEFAULT_BACKEND_LOG),
-            help=f"Log file for Flask backend output (default: {DEFAULT_BACKEND_LOG})",
+            help=f"Log file for backend API output (default: {DEFAULT_BACKEND_LOG})",
         )
         subparser.add_argument(
             "--frontend-log",
             default=str(DEFAULT_FRONTEND_LOG),
             help=f"Log file for Vite frontend output (default: {DEFAULT_FRONTEND_LOG})",
-        )
-        subparser.add_argument(
-            "--backend-exclude-pattern",
-            action="append",
-            dest="backend_exclude_pattern",
-            help=(
-                "Pattern(s) to exclude from Flask reload monitoring (fnmatch syntax); "
-                f"defaults to {', '.join(DEFAULT_BACKEND_EXCLUDE_PATTERNS)}"
-            ),
         )
 
     start_parser = subparsers.add_parser("start", help="Start the development stack in the background.")
