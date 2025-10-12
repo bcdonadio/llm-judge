@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import time
 from importlib import import_module
 from pathlib import Path
@@ -11,6 +12,7 @@ from threading import Event, RLock, Thread
 from typing import Any, Callable, Dict, Iterator, List, Protocol
 
 from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
+from llm_judge.utils import create_temp_outdir
 
 from .sse import SSEBroker, time_now_ms
 
@@ -65,7 +67,8 @@ class JobManager:
         history_limit: int = 500,
     ) -> None:
         self._lock = RLock()
-        self._outdir = outdir or Path("results")
+        self._outdir = outdir or create_temp_outdir()
+        self._outdir.mkdir(parents=True, exist_ok=True)
         self._runner_factory = runner_factory or self._default_runner_factory
         self._history_limit = history_limit
 
@@ -85,6 +88,10 @@ class JobManager:
     # ------------------------------------------------------------------ #
     # Public API
 
+    @property
+    def outdir(self) -> Path:
+        return self._outdir
+
     def start_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         config = self._build_config(payload)
         config_dict = self._config_to_dict(config)
@@ -102,12 +109,16 @@ class JobManager:
             self._finished_at = None
             self._control = ThreadedRunnerControl()
 
+            # Detect Flask dev server (which doesn't work well with gevent due to reloader subprocess)
+            flask_debug = os.getenv("FLASK_DEBUG") == "1" or os.getenv("FLASK_ENV") == "development"
+
             try:
                 gevent_module = import_module("gevent")
             except ModuleNotFoundError:
                 gevent_module = None
 
-            if gevent_module is not None:
+            # Use threading for Flask dev server, gevent for production (Gunicorn)
+            if gevent_module is not None and not flask_debug:
                 worker = gevent_module.spawn(self._run_worker, config, self._control)
             else:
                 worker = Thread(

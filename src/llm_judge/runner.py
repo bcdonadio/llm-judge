@@ -207,7 +207,8 @@ class LLMJudgeRunner:
             if isinstance(value, Path):
                 safe_payload[key] = str(value)
             elif isinstance(value, Counter):
-                safe_payload[key] = dict(value)
+                counter_value = cast("Counter[str]", value)
+                safe_payload[key] = dict(counter_value)
             else:
                 safe_payload[key] = value
         self._progress_callback(RunnerEvent(type=event_type, payload=safe_payload))

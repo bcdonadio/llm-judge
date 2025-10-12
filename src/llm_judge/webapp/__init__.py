@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple, cast
 from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
 from .job_manager import JobManager
+from ..utils import create_temp_outdir
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 frontend_bp = Blueprint("frontend", __name__)
@@ -166,7 +167,7 @@ def api_events() -> Response:
 @frontend_bp.route("/", defaults={"path": ""})
 @frontend_bp.route("/<path:path>")
 def serve_frontend(path: str) -> Response:
-    dist_dir = Path(current_app.config["FRONTEND_DIST"]).resolve()
+    dist_dir = Path(cast(str, current_app.config["FRONTEND_DIST"])).resolve()
     if not dist_dir.exists():
         response = jsonify(
             {
@@ -204,13 +205,22 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
 
     app_config = cast(Dict[str, Any], app.config)
     app_config.setdefault("FRONTEND_DIST", str(frontend_dist))
-    app_config.setdefault("RUNS_OUTDIR", str(project_root / "results"))
 
     if config:
         app_config.update(config)
 
-    manager = JobManager(outdir=Path(app_config["RUNS_OUTDIR"]))
+    outdir_value = app_config.get("RUNS_OUTDIR")
+    if outdir_value is None:
+        outdir_path = create_temp_outdir()
+        app_config["RUNS_OUTDIR"] = str(outdir_path)
+    else:
+        outdir_path = Path(outdir_value)
+
+    manager = JobManager(outdir=outdir_path)
     app.config["JOB_MANAGER"] = manager
+    outdir_str = str(manager.outdir)
+    print(f"[Artifacts] Using output directory: {outdir_str}")
+    app.logger.info("[Artifacts] Using output directory: %s", outdir_str)
 
     app.register_blueprint(api_bp)
     app.register_blueprint(frontend_bp)

@@ -8,6 +8,7 @@ import csv
 import io
 import json
 import logging
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, cast
@@ -384,7 +385,7 @@ def test_summaries_and_recording(tmp_path: Path) -> None:
     assert any("n/a" in line for line in lines)
     stats = runner._summary_stats(summary)
     assert stats["model-a"]["total"] == 2
-    assert pytest.approx(stats["model-b"]["avg_initial_completeness"]) == 1.0
+    assert math.isclose(stats["model-b"]["avg_initial_completeness"], 1.0)
 
 
 def test_fetch_completion_success(tmp_path: Path) -> None:
