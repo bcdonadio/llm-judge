@@ -7,13 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig tsconfig.json",
-    "test": "vitest run --coverage",
-    "lint": "eslint .",
-    "lint:ci": "eslint . --format junit --output-file eslint-report.xml",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "test:watch": "vitest --watch"
+    "format-check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:report": "eslint . --format junit --output-file eslint-report.xml",
+    "typing": "svelte-check --tsconfig tsconfig.json",
+    "unit-test": "vitest run --coverage",
+    "test:watch": "vitest --watch",
+    "check": "npm run format-check && npm run lint && npm run typing && npm run unit-test"
   },
   "dependencies": {
     "svelte": "5.39.11"

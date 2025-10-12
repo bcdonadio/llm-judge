@@ -63,10 +63,6 @@ class MockEventSource {
   }
 }
 
-declare global {
-  var EventSource: typeof MockEventSource;
-}
-
 describe("stores", () => {
   const originalEventSource = globalThis.EventSource;
   const originalFetch = globalThis.fetch;

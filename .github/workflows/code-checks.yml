@@ -21,9 +21,9 @@ jobs:
     env:
       UV_PROJECT_ENVIRONMENT: .venv
     outputs:
-      fmt_outcome: ${{ steps.fmtr.outcome }}
+      format_outcome: ${{ steps.format.outcome }}
       lint_outcome: ${{ steps.lint.outcome }}
-      type_outcome: ${{ steps.typecheck.outcome }}
+      typing_outcome: ${{ steps.typing.outcome }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -64,16 +64,16 @@ jobs:
         run: make install
 
       - name: Check formatting
-        id: fmtr
-        run: make fmt-check
+        id: format
+        run: make format-check
 
       - name: Run linters
         id: lint
         run: make lint
 
-      - name: Run type checks
-        id: typecheck
-        run: make type
+      - name: Run typing checks
+        id: typing
+        run: make typing
 
   unit-tests:
     name: Unit Tests
@@ -121,10 +121,10 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Run tests
-        id: pytest
+      - name: Run unit tests
+        id: unit_tests
         continue-on-error: true
-        run: make test
+        run: make unit-tests
 
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
@@ -140,7 +140,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1.1.1
         with:
-          files: pytest-results.xml,webui/eslint-report.xml
+          files: pytest-results.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test artifacts
@@ -153,15 +153,14 @@ jobs:
             pytest-results.xml
             coverage.json
             webui/coverage/lcov.info
-            webui/eslint-report.xml
 
       - name: Publish workflow summary
         if: always()
         env:
-          FORMAT_OUTCOME: ${{ needs.static-analysis.outputs.fmt_outcome }}
+          FORMAT_OUTCOME: ${{ needs.static-analysis.outputs.format_outcome }}
           LINT_OUTCOME: ${{ needs.static-analysis.outputs.lint_outcome }}
-          TYPE_OUTCOME: ${{ needs.static-analysis.outputs.type_outcome }}
-          TEST_OUTCOME: ${{ steps.pytest.outcome }}
+          TYPING_OUTCOME: ${{ needs.static-analysis.outputs.typing_outcome }}
+          TEST_OUTCOME: ${{ steps.unit_tests.outcome }}
         run: |
           python <<'PY'
           import json
@@ -245,10 +244,10 @@ jobs:
           lines.append("")
           lines.append("## Step Outcomes")
           checks = [
-              ("Formatting", os.environ.get("FORMAT_OUTCOME", "")),
+              ("Format Check", os.environ.get("FORMAT_OUTCOME", "")),
               ("Lint", os.environ.get("LINT_OUTCOME", "")),
-              ("Type", os.environ.get("TYPE_OUTCOME", "")),
-              ("Tests", os.environ.get("TEST_OUTCOME", "")),
+              ("Typing", os.environ.get("TYPING_OUTCOME", "")),
+              ("Unit Tests", os.environ.get("TEST_OUTCOME", "")),
           ]
           lines.append("| Step | Outcome |")
           lines.append("| --- | --- |")
@@ -261,5 +260,5 @@ jobs:
           PY
 
       - name: Fail if tests failed
-        if: steps.pytest.outcome == 'failure'
+        if: steps.unit_tests.outcome == 'failure'
         run: exit 1

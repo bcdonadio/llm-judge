@@ -1,4 +1,4 @@
-.PHONY: check fmt fmt-black fmt-eslint fmt-check fmt-check-black fmt-check-eslint lint lint-black lint-flake8 lint-eslint type type-mypy type-pyright test test-webui install gitleaks-hook fmt-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
+.PHONY: check fmt format-python format-webui format-check format-check-python format-check-webui lint lint-python lint-webui lint-webui-report typing typing-mypy typing-pyright typing-webui type unit-tests unit-tests-python unit-tests-webui test test-webui install gitleaks-hook format-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -24,7 +24,7 @@ install: hooks
 		cd webui && $(WEBUI_NPM) install; \
 	fi
 
-hooks: gitleaks-hook fmt-check-hook
+hooks: gitleaks-hook format-check-hook
 
 gitleaks-hook:
 	@mkdir -p $(dir $(PRECOMMIT_HOOK))
@@ -43,64 +43,76 @@ gitleaks-hook:
 	fi
 	@chmod +x $(PRECOMMIT_HOOK)
 
-fmt-check-hook:
+format-check-hook:
 	@mkdir -p $(dir $(PRECOMMIT_HOOK))
 	@if [ ! -f $(PRECOMMIT_HOOK) ]; then \
 		echo '#!/usr/bin/env bash' > $(PRECOMMIT_HOOK); \
 		echo 'set -e' >> $(PRECOMMIT_HOOK); \
 	fi
-	@if ! grep -Fq '# fmt-check pre-commit hook' $(PRECOMMIT_HOOK); then \
-		printf '\n# fmt-check pre-commit hook\n' >> $(PRECOMMIT_HOOK); \
-		echo 'if ! make fmt-check; then' >> $(PRECOMMIT_HOOK); \
+	@if ! grep -Fq '# format-check pre-commit hook' $(PRECOMMIT_HOOK); then \
+		printf '\n# format-check pre-commit hook\n' >> $(PRECOMMIT_HOOK); \
+		echo 'if ! make format-check; then' >> $(PRECOMMIT_HOOK); \
 		echo '  echo "Formatting check failed. Run '\''make fmt'\'' to fix formatting."' >> $(PRECOMMIT_HOOK); \
 		echo '  exit 1' >> $(PRECOMMIT_HOOK); \
 		echo 'fi' >> $(PRECOMMIT_HOOK); \
 	fi
 	@chmod +x $(PRECOMMIT_HOOK)
 
-fmt: fmt-black fmt-eslint
+fmt: format-python format-webui
 
-fmt-black:
+format-python:
 	$(UV_RUN) black .
 
-fmt-eslint:
+format-webui:
 	cd webui && $(WEBUI_NPM) run format
 
-fmt-check: fmt-check-black fmt-check-eslint
+format-check: format-check-python format-check-webui
 
-fmt-check-black:
+format-check-python:
 	$(UV_RUN) black --check .
 
-fmt-check-eslint:
-	cd webui && $(WEBUI_NPM) run format:check
+format-check-webui:
+	cd webui && $(WEBUI_NPM) run format-check
 
-lint: lint-black lint-flake8 lint-eslint
+fmt-check: format-check
 
-lint-black:
-	$(UV_RUN) black --check .
+lint: lint-python lint-webui
 
-lint-flake8:
+lint-python:
 	$(UV_RUN) flake8 .
 
-lint-eslint:
+lint-webui:
 	cd webui && $(WEBUI_NPM) run lint
 
-type: type-mypy type-pyright
+lint-webui-report:
+	cd webui && $(WEBUI_NPM) run lint:report
 
-type-mypy:
+typing: typing-mypy typing-pyright typing-webui
+
+typing-mypy:
 	$(UV_RUN) mypy .
 
-type-pyright:
+typing-pyright:
 	$(UV_RUN) pyright
 
-test: type test-webui
+typing-webui:
+	cd webui && $(WEBUI_NPM) run typing
+
+type: typing
+
+unit-tests: unit-tests-python unit-tests-webui
+
+unit-tests-python:
 	$(UV_RUN) pytest -n auto --cov=llm_judge --cov-report=term-missing --cov-report=json:coverage.json --junitxml=pytest-results.xml
 
-test-webui:
-	cd webui && $(WEBUI_NPM) run lint:ci
-	cd webui && $(WEBUI_NPM) run test
+unit-tests-webui:
+	cd webui && $(WEBUI_NPM) run unit-test
 
-check: fmt-check lint type test
+test: typing unit-tests
+
+test-webui: lint-webui-report unit-tests-webui
+
+check: format-check lint typing unit-tests
 
 web-build:
 	cd webui && $(WEBUI_NPM) install
