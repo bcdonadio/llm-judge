@@ -2,7 +2,7 @@
 
 import time
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, cast
 
 from .container import ServiceContainer
 from .domain import RunConfiguration
@@ -33,9 +33,9 @@ class RunnerFactory:
         Returns:
             Configured LLMJudgeRunner instance
         """
-        api_client = self._container.resolve(IAPIClient)
-        judge_service = self._container.resolve(IJudgeService)
-        prompts_manager = self._container.resolve(IPromptsManager)
+        api_client = cast(IAPIClient, self._container.resolve(IAPIClient))
+        judge_service = cast(IJudgeService, self._container.resolve(IJudgeService))
+        prompts_manager = cast(IPromptsManager, self._container.resolve(IPromptsManager))
 
         return LLMJudgeRunner(
             config=config,
@@ -72,7 +72,7 @@ class UnitOfWorkFactory:
         if csv_fieldnames is None:
             csv_fieldnames = list(CSV_FIELDNAMES)
 
-        fs_service = self._container.resolve(IFileSystemService)
+        fs_service = cast(IFileSystemService, self._container.resolve(IFileSystemService))
 
         run_directory = outdir / "runs" / timestamp
         csv_path = outdir / f"results_{timestamp}.csv"
@@ -85,7 +85,7 @@ class UnitOfWorkFactory:
 class ConfigurationBuilder:
     """Builder for creating RunConfiguration instances."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._models: List[str] = []
         self._judge_model: str = "x-ai/grok-4-fast"
         self._outdir: Path = Path("./results")

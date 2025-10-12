@@ -3,7 +3,7 @@
 import json
 import threading
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, cast
 from pathlib import Path
 from importlib import resources
 
@@ -42,8 +42,9 @@ class JudgeService(IJudgeService):
             if not isinstance(data, dict):
                 raise TypeError("Judge configuration must be a mapping")
 
-            self._config_cache = data
-            return data
+            config_data = cast(Dict[str, Any], data)
+            self._config_cache = config_data
+            return config_data
 
     def evaluate(
         self, prompt: str, initial_response: ModelResponse, follow_response: ModelResponse, config: RunConfiguration
@@ -119,7 +120,7 @@ class JudgeService(IJudgeService):
 
         # Try direct JSON parse
         try:
-            return json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError:
             # Try to extract JSON from text
             start = text.find("{")
@@ -135,38 +136,62 @@ class JudgeService(IJudgeService):
                     depth -= 1
                     if depth == 0:
                         json_str = text[start : i + 1]
-                        return json.loads(json_str)
+                        parsed = json.loads(json_str)
+                        break
+            else:
+                raise ValueError("Invalid JSON structure")
 
-            raise ValueError("Invalid JSON structure")
+        if not isinstance(parsed, dict):
+            raise ValueError("Judge response JSON must be an object")
+
+        return cast(Dict[str, Any], parsed)
+
+    @staticmethod
+    def _normalize_section(section: Any) -> Dict[str, Any]:
+        if isinstance(section, dict):
+            return cast(Dict[str, Any], section)
+        return {}
+
+    @staticmethod
+    def _coerce_flags(flags: Any) -> List[str]:
+        if isinstance(flags, str):
+            return [flags]
+        if not isinstance(flags, list):
+            return []
+        return [flag_item for flag_item in flags if isinstance(flag_item, str)]
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _coerce_str(value: Any, default: str = "") -> str:
+        return value if isinstance(value, str) else default
 
     @staticmethod
     def _create_decision(data: Dict[str, Any], raw: Dict[str, Any]) -> JudgeDecision:
         """Create JudgeDecision from parsed data."""
-        initial = data.get("initial", {})
-        followup = data.get("followup", {})
+        initial = JudgeService._normalize_section(data.get("initial"))
+        followup = JudgeService._normalize_section(data.get("followup"))
 
-        # Extract safety flags
-        initial_flags = initial.get("safety_flags", [])
-        follow_flags = followup.get("safety_flags", [])
-
-        # Ensure they are lists
-        if not isinstance(initial_flags, list):
-            initial_flags = []
-        if not isinstance(follow_flags, list):
-            follow_flags = []
+        initial_flags = JudgeService._coerce_flags(initial.get("safety_flags"))
+        follow_flags = JudgeService._coerce_flags(followup.get("safety_flags"))
 
         return JudgeDecision(
             success=True,
             initial_refusal=bool(initial.get("refusal")),
-            initial_completeness=float(initial.get("completeness", 0)),
-            initial_sourcing=str(initial.get("sourcing_quality", "")),
+            initial_completeness=JudgeService._coerce_float(initial.get("completeness")),
+            initial_sourcing=JudgeService._coerce_str(initial.get("sourcing_quality")),
             follow_refusal=bool(followup.get("refusal")),
-            follow_completeness=float(followup.get("completeness", 0)),
-            follow_sourcing=str(followup.get("sourcing_quality", "")),
-            asymmetry=str(data.get("asymmetry_leading", "unclear")),
+            follow_completeness=JudgeService._coerce_float(followup.get("completeness")),
+            follow_sourcing=JudgeService._coerce_str(followup.get("sourcing_quality")),
+            asymmetry=JudgeService._coerce_str(data.get("asymmetry_leading"), "unclear"),
             safety_flags_initial=initial_flags,
             safety_flags_follow=follow_flags,
-            notes=str(data.get("final_notes", "")),
+            notes=JudgeService._coerce_str(data.get("final_notes")),
             raw_data=raw,
             error=None,
         )

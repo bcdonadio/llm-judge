@@ -2,7 +2,7 @@
 
 import os
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast, Mapping
 from pathlib import Path
 import json
 
@@ -14,14 +14,19 @@ from ..services import IConfigurationManager
 class ConfigurationManager(IConfigurationManager):
     """Thread-safe configuration manager with file and environment support."""
 
-    def __init__(self, config_file: Optional[Path] = None, auto_reload: bool = False):
+    def __init__(self, config_file: Optional[Path | str] = None, auto_reload: bool = False):
         """Initialize configuration manager.
 
         Args:
             config_file: Path to configuration file (YAML or JSON)
             auto_reload: Whether to automatically reload config on access
         """
-        self._config_file = config_file
+        if isinstance(config_file, str):
+            config_path: Optional[Path] = Path(config_file)
+        else:
+            config_path = config_file
+
+        self._config_file: Optional[Path] = config_path
         self._auto_reload = auto_reload
         self._lock = threading.RLock()
         self._config: Dict[str, Any] = {}
@@ -48,17 +53,21 @@ class ConfigurationManager(IConfigurationManager):
 
             # Navigate nested keys
             keys = key.split(".")
-            value = self._config
+            current: Any = self._config
 
             for k in keys:
-                if isinstance(value, dict):
-                    value = value.get(k)
-                    if value is None:
+                if isinstance(current, Mapping):
+                    current_map = cast(Mapping[str, Any], current)
+                    if k not in current_map:
                         return default
+                    next_value: Any = current_map.get(k)
+                    if next_value is None:
+                        return default
+                    current = next_value
                 else:
                     return default
 
-            return value if value is not None else default
+            return current if current is not None else default
 
     def set(self, key: str, value: Any) -> None:
         """Set configuration value.
@@ -85,7 +94,9 @@ class ConfigurationManager(IConfigurationManager):
                 self.reload()
 
             value = self.get(section, {})
-            return value if isinstance(value, dict) else {}
+            if isinstance(value, dict):
+                return cast(Dict[str, Any], value)
+            return {}
 
     def reload(self) -> None:
         """Reload configuration from file."""
@@ -101,6 +112,7 @@ class ConfigurationManager(IConfigurationManager):
             # Load based on file extension
             suffix = self._config_file.suffix.lower()
 
+            data: Any
             with open(self._config_file, "r", encoding="utf-8") as f:
                 if suffix in {".yaml", ".yml"}:
                     data = yaml.safe_load(f)
@@ -109,10 +121,11 @@ class ConfigurationManager(IConfigurationManager):
                 else:
                     raise ValueError(f"Unsupported configuration file format: {suffix}")
 
-            if not isinstance(data, dict):
+            if data is None or not isinstance(data, dict):
                 raise TypeError("Configuration file must contain a mapping/object")
 
-            self._config = data
+            data_dict: Dict[str, Any] = cast(Dict[str, Any], data)
+            self._config = dict(data_dict)
             self._loaded = True
 
     def get_all(self) -> Dict[str, Any]:
@@ -122,13 +135,14 @@ class ConfigurationManager(IConfigurationManager):
                 self.reload()
             return self._config.copy()
 
-    def merge(self, config: Dict[str, Any]) -> None:
+    def merge(self, config: Mapping[str, Any]) -> None:
         """Merge configuration dictionary into current config."""
         with self._lock:
-            self._deep_merge(self._config, config)
+            merge_data: Dict[str, Any] = {str(key): value for key, value in config.items()}
+            self._deep_merge(self._config, merge_data)
 
     @staticmethod
-    def _deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    def _deep_merge(target: Dict[str, Any], source: Mapping[str, Any]) -> None:
         """Deep merge source into target dictionary."""
         for key, value in source.items():
             if key in target and isinstance(target[key], dict) and isinstance(value, dict):

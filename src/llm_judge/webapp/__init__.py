@@ -14,8 +14,8 @@ from ..utils import create_temp_outdir
 
 # Optional import for DI support
 try:
-    from ..container import ServiceContainer
-    from ..factories import RunnerFactory
+    from ..container import ServiceContainer  # pyright: ignore[reportUnusedImport]
+    from ..factories import RunnerFactory  # pyright: ignore[reportUnusedImport]
 
     has_di_support = True
 except ImportError:

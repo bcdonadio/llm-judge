@@ -1,7 +1,7 @@
 """Thread-safe prompts management implementation."""
 
 import threading
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from pathlib import Path
 from importlib import resources
 
@@ -37,17 +37,22 @@ class PromptsManager(IPromptsManager):
             if not isinstance(data, dict):
                 raise TypeError("Prompts YAML must be a mapping")
 
-            self._prompts_cache = data
-            return data
+            prompts_data = cast(Dict[str, Any], data)
+            self._prompts_cache = prompts_data
+            return prompts_data
 
     def get_core_prompts(self) -> List[Prompt]:
         """Get core prompts as domain objects."""
         data = self._load_prompts()
-        prompts_list = data.get("core_prompts", [])
+        prompts_list_raw = data.get("core_prompts", [])
+        if not isinstance(prompts_list_raw, list):
+            return []
 
-        return [
-            Prompt(text=text, category="core", index=i) for i, text in enumerate(prompts_list) if isinstance(text, str)
-        ]
+        prompts: List[Prompt] = []
+        for i, text in enumerate(prompts_list_raw):
+            if isinstance(text, str):
+                prompts.append(Prompt(text=text, category="core", index=i))
+        return prompts
 
     def get_follow_up(self) -> str:
         """Get follow-up prompt text."""
@@ -58,8 +63,10 @@ class PromptsManager(IPromptsManager):
     def get_probes(self) -> List[str]:
         """Get probe prompts."""
         data = self._load_prompts()
-        probes = data.get("probes", [])
-        return [p for p in probes if isinstance(p, str)] if isinstance(probes, list) else []
+        probes_raw = data.get("probes", [])
+        if not isinstance(probes_raw, list):
+            return []
+        return [probe for probe in probes_raw if isinstance(probe, str)]
 
     def reload(self) -> None:
         """Force reload of prompts from disk."""

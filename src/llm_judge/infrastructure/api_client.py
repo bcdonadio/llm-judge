@@ -2,7 +2,7 @@
 
 import threading
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 
 import httpx
 from openai import OpenAI, OpenAIError
@@ -91,14 +91,15 @@ class OpenRouterClient(IAPIClient):
 
         try:
             with self._lock:
-                chat_with_raw = client.chat.completions.with_raw_response
+                client_any = cast(Any, client)
+                chat_with_raw = client_any.chat.completions.with_raw_response
                 raw_response = chat_with_raw.create(
                     model=model,
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=cast(Any, messages),
                     temperature=temperature,
                     max_tokens=max_tokens,
                     extra_headers=headers,
-                    response_format=response_format,  # type: ignore[arg-type]
+                    response_format=cast(Any, response_format),
                 )
 
             completion = raw_response.parse()
@@ -133,7 +134,7 @@ class OpenRouterClient(IAPIClient):
             self._client = None
             self._logger.debug("Closed OpenRouter client connections")
 
-    def __enter__(self):
+    def __enter__(self) -> "OpenRouterClient":
         return self
 
     def __exit__(self, *args: Any, **kwargs: Any) -> None:
@@ -147,23 +148,39 @@ class OpenRouterClient(IAPIClient):
             content = message.get("content", "")
 
             # Handle string content
-            if isinstance(content, str):
+            if isinstance(content, str) and content:
                 return content
 
             # Handle structured content (list of segments)
             if isinstance(content, list):
-                texts = []
-                for item in content:
-                    if isinstance(item, dict) and "text" in item:
-                        texts.append(item["text"])
-                    elif isinstance(item, str):
-                        texts.append(item)
-                return "".join(texts)
+                segments = cast(List[Dict[str, Any] | str], content)
+                texts: List[str] = []
+                for item in segments:
+                    if isinstance(item, dict):
+                        text_value = item.get("text")
+                        if isinstance(text_value, str):
+                            texts.append(text_value)
+                        continue
+                    texts.append(item)
+                combined = "".join(texts)
+                if combined:
+                    return combined
 
             # Handle reasoning field as fallback
             reasoning = message.get("reasoning")
             if isinstance(reasoning, str) and reasoning.strip():
                 return reasoning
+
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                call_list = cast(List[Dict[str, Any]], tool_calls)
+                for call in call_list:
+                    function = call.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    arguments = function.get("arguments")
+                    if isinstance(arguments, str) and arguments.strip():
+                        return arguments
 
             return ""
         except (KeyError, IndexError, TypeError):
@@ -174,9 +191,18 @@ class OpenRouterClient(IAPIClient):
         """Extract finish reason from response."""
         try:
             choice = payload["choices"][0]
-            return choice.get("finish_reason") or choice.get("native_finish_reason")
         except (KeyError, IndexError):
             return None
+
+        finish_reason = choice.get("finish_reason")
+        if isinstance(finish_reason, str):
+            return finish_reason
+
+        native_reason = choice.get("native_finish_reason")
+        if isinstance(native_reason, str):
+            return native_reason
+
+        return None
 
 
 __all__ = ["OpenRouterClient"]

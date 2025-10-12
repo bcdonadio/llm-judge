@@ -138,7 +138,9 @@ class LLMJudgeRunner:
     @staticmethod
     def _default_prompt_loader() -> Iterable[str]:
         """Yield the configured prompt collection."""
-        return ["test prompt 1", "test prompt 2", "test prompt 3"]
+        from .prompts import CORE_PROMPTS
+
+        return CORE_PROMPTS
 
     def _load_prompts(self) -> List[Prompt]:
         """Load prompts using the new or legacy interface."""
@@ -209,32 +211,53 @@ class LLMJudgeRunner:
 
     def _verbose_log_judge(
         self,
-        judge_decision: JudgeDecision,
+        judge_decision: JudgeDecision | None = None,
+        *,
+        judge_result: Optional[Dict[str, Any]] = None,
+        initial_decision: Optional[Dict[str, Any]] = None,
+        follow_decision: Optional[Dict[str, Any]] = None,
+        asymmetry: Optional[str] = None,
+        final_notes: Optional[str] = None,
     ) -> None:
         if not self.config.verbose:
             return
-        if judge_decision.success:
+
+        decision = judge_decision
+        if decision is None:
+            if judge_result is None:
+                return
+            legacy_payload: Dict[str, Any] = {
+                "ok": judge_result.get("ok"),
+                "error": judge_result.get("error"),
+                "decision": {
+                    "initial": initial_decision or {},
+                    "followup": follow_decision or {},
+                    "asymmetry_leading": asymmetry,
+                    "final_notes": final_notes,
+                },
+            }
+            decision = self._convert_legacy_judge_result(legacy_payload)
+
+        if decision.success:
             details = (
                 "  Judge ▶ init(refusal={r0}, comp={c0}, source={s0}) "
                 "follow(refusal={r1}, comp={c1}, source={s1}) asym={asym}"
             ).format(
-                r0=judge_decision.initial_refusal,
-                c0=judge_decision.initial_completeness,
-                s0=judge_decision.initial_sourcing,
-                r1=judge_decision.follow_refusal,
-                c1=judge_decision.follow_completeness,
-                s1=judge_decision.follow_sourcing,
-                asym=judge_decision.asymmetry,
+                r0=decision.initial_refusal,
+                c0=decision.initial_completeness,
+                s0=decision.initial_sourcing,
+                r1=decision.follow_refusal,
+                c1=decision.follow_completeness,
+                s1=decision.follow_sourcing,
+                asym=decision.asymmetry,
             )
             self._logger.info("%s", self._color(details, Fore.YELLOW))
-            if judge_decision.notes:
-                self._logger.info(
-                    "%s", self._color(f"  Notes ▶ {self._snippet(judge_decision.notes)}", Fore.LIGHTYELLOW_EX)
-                )
+            if decision.notes:
+                self._logger.info("%s", self._color(f"  Notes ▶ {self._snippet(decision.notes)}", Fore.LIGHTYELLOW_EX))
         else:
             self._logger.info(
                 "%s",
-                self._color(f"  Judge ▶ error={judge_decision.error}", Fore.RED + Style.BRIGHT),
+                self._color(f"  Judge ▶ error={decision.error}", Fore.RED + Style.BRIGHT),
             )
 
     # --------------------------------------------------------------------- #
@@ -265,8 +288,16 @@ class LLMJudgeRunner:
         temperature: float,
         step: str,
         prompt_index: int,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> tuple[str, Dict[str, Any]]:
         """Fetch a completion using new or legacy API."""
+        request_metadata: Dict[str, str] = {
+            "referer": "https://openrouter.ai",
+            "title": "AsymmetrySuite",
+        }
+        if metadata:
+            request_metadata.update(metadata)
+
         if self._api_client is not None:
             # Use new DI service
             try:
@@ -275,7 +306,7 @@ class LLMJudgeRunner:
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
-                    metadata={"referer": "https://openrouter.ai", "title": "AsymmetrySuite"},
+                    metadata=request_metadata,
                 )
                 return response.text, response.raw_payload
             except Exception as exc:  # pragma: no cover
@@ -292,13 +323,12 @@ class LLMJudgeRunner:
             chat_func = openrouter_chat
 
         try:
-            metadata = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
             payload = chat_func(
                 model,
                 messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                metadata=metadata,
+                metadata=request_metadata,
                 step=step,
                 prompt_index=prompt_index,
                 use_color=self.config.use_color,
@@ -370,19 +400,42 @@ class LLMJudgeRunner:
         return self._convert_legacy_judge_result(judge_result)
 
     @staticmethod
+    def _ensure_dict(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(cast(Dict[str, Any], value))
+        return {}
+
+    @staticmethod
+    def _normalize_result_section(section: Any) -> Dict[str, Any]:
+        if isinstance(section, dict):
+            return cast(Dict[str, Any], section)
+        return {}
+
+    @staticmethod
+    def _coerce_flag_list(flags: Any) -> List[str]:
+        if isinstance(flags, str):
+            return [flags]
+        if not isinstance(flags, list):
+            return []
+        return [flag for flag in flags if isinstance(flag, str)]
+
+    @staticmethod
+    def _coerce_float_value(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _coerce_str_value(value: Any, default: str = "") -> str:
+        return value if isinstance(value, str) else default
+
+    @staticmethod
     def _convert_legacy_judge_result(judge_result: Dict[str, Any]) -> JudgeDecision:
         """Convert legacy judge result to new domain object."""
-        decision_dict = judge_result.get("decision", {})
-        if not isinstance(decision_dict, dict):
-            decision_dict = {}
-
-        initial_decision = decision_dict.get("initial", {})
-        if not isinstance(initial_decision, dict):
-            initial_decision = {}
-
-        followup_decision = decision_dict.get("followup", {})
-        if not isinstance(followup_decision, dict):
-            followup_decision = {}
+        decision_dict = LLMJudgeRunner._normalize_result_section(judge_result.get("decision"))
+        initial_decision = LLMJudgeRunner._normalize_result_section(decision_dict.get("initial"))
+        followup_decision = LLMJudgeRunner._normalize_result_section(decision_dict.get("followup"))
 
         asymmetry = decision_dict.get("asymmetry_leading")
         if not isinstance(asymmetry, str):
@@ -392,17 +445,20 @@ class LLMJudgeRunner:
         if not isinstance(final_notes, str):
             final_notes = ""
 
+        initial_flags = LLMJudgeRunner._coerce_flag_list(initial_decision.get("safety_flags"))
+        follow_flags = LLMJudgeRunner._coerce_flag_list(followup_decision.get("safety_flags"))
+
         return JudgeDecision(
             success=bool(judge_result.get("ok")),
             initial_refusal=bool(initial_decision.get("refusal")),
-            initial_completeness=float(initial_decision.get("completeness", 0.0)),
-            initial_sourcing=str(initial_decision.get("sourcing_quality", "")),
+            initial_completeness=LLMJudgeRunner._coerce_float_value(initial_decision.get("completeness")),
+            initial_sourcing=LLMJudgeRunner._coerce_str_value(initial_decision.get("sourcing_quality")),
             follow_refusal=bool(followup_decision.get("refusal")),
-            follow_completeness=float(followup_decision.get("completeness", 0.0)),
-            follow_sourcing=str(followup_decision.get("sourcing_quality", "")),
+            follow_completeness=LLMJudgeRunner._coerce_float_value(followup_decision.get("completeness")),
+            follow_sourcing=LLMJudgeRunner._coerce_str_value(followup_decision.get("sourcing_quality")),
             asymmetry=asymmetry,
-            safety_flags_initial=initial_decision.get("safety_flags", []),
-            safety_flags_follow=followup_decision.get("safety_flags", []),
+            safety_flags_initial=initial_flags,
+            safety_flags_follow=follow_flags,
             notes=final_notes,
             raw_data=judge_result,
             error=None if judge_result.get("ok") else judge_result.get("error", "unknown error"),
@@ -412,11 +468,15 @@ class LLMJudgeRunner:
     def _record_summary(
         summary_data: Dict[str, List[Dict[str, Any]]],
         model: str,
-        judge_decision: JudgeDecision,
+        judge_decision: JudgeDecision | Dict[str, Any],
+        initial_decision: Optional[Dict[str, Any]] = None,
+        follow_decision: Optional[Dict[str, Any]] = None,
+        asymmetry: Optional[str] = None,
     ) -> None:
         summary_data.setdefault(model, [])
-        summary_data[model].append(
-            {
+
+        if isinstance(judge_decision, JudgeDecision):
+            row = {
                 "ok": judge_decision.success,
                 "initial_comp": judge_decision.initial_completeness if judge_decision.success else None,
                 "follow_comp": judge_decision.follow_completeness if judge_decision.success else None,
@@ -427,7 +487,24 @@ class LLMJudgeRunner:
                 "asymmetry": judge_decision.asymmetry,
                 "error": judge_decision.error,
             }
-        )
+        else:
+            ok = bool(judge_decision.get("ok")) if "ok" in judge_decision else False
+            error = judge_decision.get("error") if not ok else None
+            init = LLMJudgeRunner._ensure_dict(initial_decision)
+            follow = LLMJudgeRunner._ensure_dict(follow_decision)
+            row = {
+                "ok": ok,
+                "initial_comp": init.get("completeness") if ok else None,
+                "follow_comp": follow.get("completeness") if ok else None,
+                "initial_refusal": bool(init.get("refusal")),
+                "follow_refusal": bool(follow.get("refusal")),
+                "initial_source": str(init.get("sourcing_quality", "n/a")),
+                "follow_source": str(follow.get("sourcing_quality", "n/a")),
+                "asymmetry": asymmetry if asymmetry is not None else judge_decision.get("asymmetry", "n/a"),
+                "error": error,
+            }
+
+        summary_data[model].append(row)
 
     def _summary_stats(self, summary_data: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         stats: Dict[str, Dict[str, Any]] = {}
@@ -503,7 +580,17 @@ class LLMJudgeRunner:
                 lines.append(f"  Issues: {_format_counter(errors)}")
         return lines
 
-    def _limited_prompts(self, prompts: Sequence[Prompt]) -> Sequence[Prompt]:
+    @staticmethod
+    def _ensure_prompt_objects(prompts: Sequence[Prompt] | Sequence[str]) -> List[Prompt]:
+        normalized: List[Prompt] = []
+        for idx, candidate in enumerate(prompts):
+            if isinstance(candidate, Prompt):
+                normalized.append(candidate)
+            else:
+                normalized.append(Prompt(text=str(candidate), category="legacy", index=idx))
+        return normalized
+
+    def _limited_prompts(self, prompts: Sequence[Prompt] | Sequence[str]) -> Sequence[Prompt] | Sequence[str]:
         if self.config.limit is None:
             return prompts
         limited = prompts[: self.config.limit]
@@ -513,7 +600,7 @@ class LLMJudgeRunner:
 
     def _process_models(
         self,
-        prompts: Sequence[Prompt],
+        prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
         writer: csv.DictWriter[Any],
         summary_data: Dict[str, List[Dict[str, Any]]],
@@ -528,7 +615,7 @@ class LLMJudgeRunner:
     def _process_single_model(
         self,
         model: str,
-        prompts: Sequence[Prompt],
+        prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
         writer: csv.DictWriter[Any],
         summary_data: Dict[str, List[Dict[str, Any]]],
@@ -538,14 +625,34 @@ class LLMJudgeRunner:
         self._logger.debug("Processing model '%s' (%d prompts)", model, len(prompts))
 
         prompt_sequence = self._limited_prompts(prompts)
-        self._emit("model_started", model=model, total_prompts=len(prompt_sequence))
+        prompt_objects = self._ensure_prompt_objects(prompt_sequence)
+        self._emit("model_started", model=model, total_prompts=len(prompt_objects))
 
-        for prompt in prompt_sequence:
+        for prompt in prompt_objects:
             if self._process_prompt(model, model_dir, prompt, writer, summary_data):
                 return True
         return False
 
-    def _process_prompt(
+    def _process_prompt(self, model: str, model_dir: Path, *args: Any) -> bool:
+        if len(args) == 3:
+            prompt_candidate, writer_candidate, summary_candidate = args
+            if not isinstance(prompt_candidate, Prompt):
+                raise TypeError("Expected Prompt instance for modern call path")
+            prompt_obj = prompt_candidate
+            writer = cast(csv.DictWriter[Any], writer_candidate)
+            summary_data = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
+        elif len(args) == 4:
+            prompt_index = int(args[0])
+            prompt_text = cast(str, args[1])
+            writer = cast(csv.DictWriter[Any], args[2])
+            summary_data = cast(Dict[str, List[Dict[str, Any]]], args[3])
+            prompt_obj = Prompt(text=prompt_text, category="legacy", index=prompt_index)
+        else:
+            raise TypeError("Unsupported signature for _process_prompt")
+
+        return self._process_prompt_impl(model, model_dir, prompt_obj, writer, summary_data)
+
+    def _process_prompt_impl(
         self,
         model: str,
         model_dir: Path,

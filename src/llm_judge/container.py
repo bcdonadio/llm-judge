@@ -2,30 +2,28 @@
 
 import os
 import threading
-from typing import Type, Any, Dict, Callable, TypeVar, Optional
-
-T = TypeVar("T")
+from typing import Any, Dict, Callable, Optional
 
 
 class ServiceContainer:
     """Thread-safe dependency injection container."""
 
-    def __init__(self):
-        self._services: Dict[Type[Any], Any] = {}
-        self._factories: Dict[Type[Any], Callable[[], Any]] = {}
+    def __init__(self) -> None:
+        self._services: Dict[object, Any] = {}
+        self._factories: Dict[object, Callable[[], Any]] = {}
         self._lock = threading.RLock()
 
-    def register_singleton(self, interface: Type[T], instance: T) -> None:
+    def register_singleton(self, interface: object, instance: Any) -> None:
         """Register a singleton service."""
         with self._lock:
             self._services[interface] = instance
 
-    def register_factory(self, interface: Type[T], factory: Callable[[], T]) -> None:
+    def register_factory(self, interface: object, factory: Callable[[], Any]) -> None:
         """Register a factory for creating instances."""
         with self._lock:
             self._factories[interface] = factory
 
-    def resolve(self, interface: Type[T]) -> T:
+    def resolve(self, interface: object) -> Any:
         """Resolve a service by interface."""
         with self._lock:
             # Check singletons first
@@ -40,15 +38,16 @@ class ServiceContainer:
                 return instance
 
             # Check if it's a concrete class we can instantiate
-            if not hasattr(interface, "__abstractmethods__"):
+            if isinstance(interface, type) and not getattr(interface, "__abstractmethods__", False):
                 try:
-                    instance = interface()  # type: ignore[call-arg]
+                    instance = interface()
                     self._services[interface] = instance
                     return instance
                 except TypeError:
                     pass
 
-            raise ValueError(f"No registration found for {interface.__name__}")
+            name = getattr(interface, "__name__", repr(interface))
+            raise ValueError(f"No registration found for {name}")
 
     def clear(self) -> None:
         """Clear all registrations and close resources."""
@@ -67,22 +66,22 @@ class ServiceContainer:
 def create_container(config: Optional[Dict[str, Any]] = None) -> ServiceContainer:
     """Factory function to create and configure a container."""
     container = ServiceContainer()
-    config = config or {}
+    config_dict: Dict[str, Any] = dict(config or {})
 
     # Register configuration manager first
     from .infrastructure.config_manager import ConfigurationManager
     from .services import IConfigurationManager
 
     config_manager = ConfigurationManager(
-        config_file=config.get("config_file"), auto_reload=config.get("auto_reload", False)
+        config_file=config_dict.get("config_file"), auto_reload=config_dict.get("auto_reload", False)
     )
     # Merge provided config into manager
-    if config:
-        config_manager.merge(config)
+    if config_dict:
+        config_manager.merge(config_dict)
     container.register_singleton(IConfigurationManager, config_manager)
 
     # Get API key from config or environment
-    api_key = config.get("api_key") or os.getenv("OPENROUTER_API_KEY")
+    api_key = config_dict.get("api_key") or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY must be provided in config or environment")
 
@@ -90,21 +89,21 @@ def create_container(config: Optional[Dict[str, Any]] = None) -> ServiceContaine
     from .infrastructure.api_client import OpenRouterClient
     from .services import IAPIClient
 
-    api_client = OpenRouterClient(api_key=api_key, base_url=config.get("base_url", "https://openrouter.ai/api/v1"))
+    api_client = OpenRouterClient(api_key=api_key, base_url=config_dict.get("base_url", "https://openrouter.ai/api/v1"))
     container.register_singleton(IAPIClient, api_client)
 
     # Register prompts manager
     from .infrastructure.prompts_manager import PromptsManager
     from .services import IPromptsManager
 
-    prompts_manager = PromptsManager(prompts_file=config.get("prompts_file"))
+    prompts_manager = PromptsManager(prompts_file=config_dict.get("prompts_file"))
     container.register_singleton(IPromptsManager, prompts_manager)
 
     # Register judge service
     from .infrastructure.judge_service import JudgeService
     from .services import IJudgeService
 
-    judge_service = JudgeService(api_client=api_client, config_file=config.get("judge_config_file"))
+    judge_service = JudgeService(api_client=api_client, config_file=config_dict.get("judge_config_file"))
     container.register_singleton(IJudgeService, judge_service)
 
     # Register utility services

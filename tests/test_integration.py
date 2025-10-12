@@ -4,7 +4,7 @@ import concurrent.futures
 import threading
 import time
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -323,7 +323,7 @@ models:
 
         # Run concurrent reads
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            futures = []
+            futures: List[concurrent.futures.Future[None]] = []
             for _ in range(10):
                 futures.append(executor.submit(read_config, "api.timeout"))
                 futures.append(executor.submit(read_config, "models"))
@@ -496,9 +496,9 @@ class TestServiceContainerThreadSafety:
 
         def resolve_services() -> None:
             try:
-                client = container.resolve(IAPIClient)
-                manager = container.resolve(IPromptsManager)
-                service = container.resolve(IJudgeService)
+                client = cast(IAPIClient, container.resolve(IAPIClient))
+                manager = cast(IPromptsManager, container.resolve(IPromptsManager))
+                service = cast(IJudgeService, container.resolve(IJudgeService))
 
                 results["clients"].append(client)
                 results["managers"].append(manager)
@@ -600,7 +600,7 @@ models:
             nonlocal operations_completed
             try:
                 # Resolve services
-                config_manager = container.resolve(IConfigurationManager)
+                config_manager = cast(IConfigurationManager, container.resolve(IConfigurationManager))
                 prompts_manager = PromptsManager(prompts_file)
 
                 # Perform operations

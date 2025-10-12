@@ -4,10 +4,12 @@ DEPRECATED: This module is maintained for backward compatibility only.
 New code should use the service classes from llm_judge.infrastructure.utility_services instead.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Optional
 
 
 from .infrastructure.utility_services import (
@@ -63,4 +65,50 @@ def extract_text(completion_json: Dict[str, Any]) -> str:
     return _response_parser.extract_text(completion_json)
 
 
-__all__ = ["now_iso", "detect_refusal", "safe_write_json", "extract_text", "create_temp_outdir"]
+def collect_content_segments(segments: Iterable[Any]) -> str:
+    """Compat wrapper for legacy helpers used in tests."""
+    return ResponseParser._collect_content_segments(segments)
+
+
+def is_dict_list(value: Any) -> bool:
+    return ResponseParser._is_dict_list(value)
+
+
+def all_dict_elements(items: Iterable[Any]) -> bool:
+    return ResponseParser._all_dict_elements(list(items))
+
+
+def extract_message(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return ResponseParser._extract_message(payload)
+
+
+def extract_content_text(message: Dict[str, Any]) -> str:
+    return _response_parser._extract_content_text(message)
+
+
+def extract_tool_call_arguments(message: Dict[str, Any]) -> str:
+    return ResponseParser._extract_tool_call_arguments(message)
+
+
+# Backward compatibility aliases (Pyright sees these as used via the public names above)
+_collect_content_segments = collect_content_segments  # pyright: ignore[reportPrivateUsage]
+_is_dict_list = is_dict_list  # pyright: ignore[reportPrivateUsage]
+_all_dict_elements = all_dict_elements  # pyright: ignore[reportPrivateUsage]
+_extract_message = extract_message  # pyright: ignore[reportPrivateUsage]
+_extract_content_text = extract_content_text  # pyright: ignore[reportPrivateUsage]
+_extract_tool_call_arguments = extract_tool_call_arguments  # pyright: ignore[reportPrivateUsage]
+
+
+__all__ = [
+    "now_iso",
+    "detect_refusal",
+    "safe_write_json",
+    "extract_text",
+    "create_temp_outdir",
+    "collect_content_segments",
+    "is_dict_list",
+    "all_dict_elements",
+    "extract_message",
+    "extract_content_text",
+    "extract_tool_call_arguments",
+]
