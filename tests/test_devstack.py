@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
+import fnmatch
 import json
 import signal
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
-import argparse
 from types import SimpleNamespace
 from typing import Any, Dict, List, Sequence, cast
 
@@ -328,6 +330,11 @@ def test_serve_backend_exit(base_config: devstack.DevStackConfig, monkeypatch: p
     assert not base_config.state_file.exists()
     assert devstack.signal.SIGTERM in handlers
     assert len(popen_calls) == 2
+    backend_cmd = popen_calls[0]
+    assert "--exclude-patterns" in backend_cmd
+    exclude_arg = backend_cmd[backend_cmd.index("--exclude-patterns") + 1]
+    for pattern in devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS:
+        assert pattern in exclude_arg
 
 
 def test_serve_frontend_exit(base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -424,6 +431,36 @@ def test_serve_cleanup_handles_errors(base_config: devstack.DevStackConfig, monk
     assert set(raised) == {base_config.pid_file, base_config.state_file}
 
 
+def test_run_devstack_handles_launch_failure(
+    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(devstack, "ensure_frontend_dependencies", _noop)
+
+    def fail_launch(
+        _config: devstack.DevStackConfig,
+        _backend_env: Dict[str, str],
+        _backend_log_handle: Any,
+        _frontend_log_handle: Any,
+        _controller: devstack.FileLogger,
+    ) -> tuple[subprocess.Popen[Any], subprocess.Popen[Any]]:
+        raise RuntimeError("frontend failed to start")
+
+    monkeypatch.setattr(devstack, "_launch_dev_servers", fail_launch)
+
+    terminates: List[str] = []
+
+    def record_terminate(proc: subprocess.Popen[Any], name: str, logger: devstack.FileLogger) -> None:
+        terminates.append(name)
+
+    monkeypatch.setattr(devstack, "terminate_process", record_terminate)
+
+    logger = make_logger(base_config.controller_log)
+    with pytest.raises(RuntimeError, match="frontend failed to start"):
+        devstack._run_devstack(base_config, logger)  # pyright: ignore[reportPrivateUsage]
+    logger.close()
+    assert terminates == []
+
+
 def test_start_devstack_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = devstack.DevStackConfig(
         project_root=tmp_path,
@@ -470,6 +507,9 @@ def test_start_devstack_success(
     assert "Development stack is running" in captured.out
     assert popen_kwargs["kwargs"]["start_new_session"] is True
     assert "serve" in popen_kwargs["cmd"]
+    assert popen_kwargs["cmd"].count("--backend-exclude-pattern") == len(devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS)
+    for pattern in devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS:
+        assert pattern in popen_kwargs["cmd"]
 
 
 def test_start_devstack_timeout(
@@ -693,6 +733,100 @@ def test_make_config() -> None:
     assert config.backend_host == "host"
     assert config.frontend_port == 2
     assert config.pid_file.name == ".pid"
+    assert config.backend_exclude_patterns == devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
+
+
+def test_make_config_custom_patterns() -> None:
+    args = argparse.Namespace(
+        backend_host="host",
+        backend_port=1,
+        frontend_host="fhost",
+        frontend_port=2,
+        python_executable="python",
+        npm_command="npm",
+        flask_app="app:create",
+        project_root=".",
+        log_dir=".logs",
+        pid_file=".pid",
+        state_file=".state",
+        controller_log=".ctrl",
+        backend_log=".back",
+        frontend_log=".front",
+        backend_exclude_pattern=["tmp/*", "data/*"],
+    )
+    config = devstack.make_config(args)
+    defaults = devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    assert config.backend_exclude_patterns[: len(defaults)] == defaults
+    assert config.backend_exclude_patterns[-2:] == ("tmp/*", "data/*")
+
+
+def test_make_config_deduplicates_patterns() -> None:
+    args = argparse.Namespace(
+        backend_host="host",
+        backend_port=1,
+        frontend_host="fhost",
+        frontend_port=2,
+        python_executable="python",
+        npm_command="npm",
+        flask_app="app:create",
+        project_root=".",
+        log_dir=".logs",
+        pid_file=".pid",
+        state_file=".state",
+        controller_log=".ctrl",
+        backend_log=".back",
+        frontend_log=".front",
+        backend_exclude_pattern=["results/*", "extra/*"],
+    )
+    config = devstack.make_config(args)
+    patterns = config.backend_exclude_patterns
+    assert patterns.count("results/*") == 1
+    assert patterns[-1] == "extra/*"
+
+
+def test_default_backend_exclude_patterns_guardrails() -> None:
+    patterns = devstack.DEFAULT_BACKEND_EXCLUDE_PATTERNS
+    assert "results/*" in patterns, "Flask reloader should ignore bulk results directory by default"
+    assert ".devstack/*" in patterns, "Flask reloader should ignore devstack runtime files by default"
+    assert all("*" in pattern or pattern.endswith("/") for pattern in patterns)
+
+
+def test_backend_exclude_patterns_match_sample_paths() -> None:
+    config = devstack.DevStackConfig()
+    samples = (
+        "results/runs/20250101/report.csv",
+        "results/results_20250101T010101Z.csv",
+        ".devstack/backend.log",
+        ".devstack/controller.log",
+    )
+    for sample in samples:
+        assert any(fnmatch.fnmatch(sample, pattern) for pattern in config.backend_exclude_patterns), sample
+
+
+def test_launch_dev_servers_without_excludes(
+    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace(base_config, backend_exclude_patterns=())
+    backend_cmd: list[str] = []
+    stubs = [StubProc([None]), StubProc([None])]
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> StubProc:
+        if not backend_cmd:
+            backend_cmd.extend(cmd)
+        return stubs.pop(0)
+
+    monkeypatch.setattr(devstack.subprocess, "Popen", fake_popen)
+    logger = make_logger(config.controller_log)
+    backend_env: Dict[str, str] = {}
+    with (
+        config.backend_log.open("w", encoding="utf-8") as backend_log_handle,
+        config.frontend_log.open("w", encoding="utf-8") as frontend_log_handle,
+    ):
+        devstack._launch_dev_servers(  # pyright: ignore[reportPrivateUsage]
+            config, backend_env, backend_log_handle, frontend_log_handle, logger
+        )
+    logger.close()
+    assert "--exclude-patterns" not in backend_cmd
 
 
 def test_parse_args_commands() -> None:

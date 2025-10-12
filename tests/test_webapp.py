@@ -1,14 +1,20 @@
 """Tests covering the Flask web UI helpers."""
 
 from __future__ import annotations
+
+import builtins
+import os
+import sys
 import time
 from importlib import import_module
 from pathlib import Path
 from threading import Thread
 from typing import Any, Callable, Dict, Iterator, List, cast
+from types import SimpleNamespace
 
 import pytest
 
+import llm_judge.webapp as webapp_module
 from llm_judge.runner import RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
 from llm_judge.webapp import create_app
 from llm_judge.webapp.job_manager import JobManager, ThreadedRunnerControl
@@ -110,6 +116,133 @@ def _runner_factory(
         return StubRunner(config, callback, control, delay=delay, loops=loops)
 
     return factory
+
+
+def test_load_dotenv_missing_file(tmp_path: Path) -> None:
+    webapp_module._load_dotenv(tmp_path / "nonexistent.env")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_load_dotenv_uses_python_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("FOO=bar\n")
+
+    load_calls: Dict[str, Any] = {}
+
+    def fake_load(path: str | Path, *, override: bool) -> None:
+        load_calls["path"] = Path(path)
+        load_calls["override"] = override
+
+    manual_called = False
+
+    def fake_manual(path: Path) -> None:
+        nonlocal manual_called
+        manual_called = True
+
+    monkeypatch.setitem(sys.modules, "dotenv", SimpleNamespace(load_dotenv=fake_load))
+    monkeypatch.setattr(webapp_module, "_load_dotenv_manual", fake_manual)
+
+    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
+
+    assert load_calls == {"path": env_file, "override": False}
+    assert manual_called is False
+
+
+def test_load_dotenv_with_library_import_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    original_import = builtins.__import__
+
+    def fake_import(
+        name: str, globals: Any | None = None, locals: Any | None = None, fromlist: tuple[str, ...] = (), level: int = 0
+    ) -> Any:
+        if name == "dotenv":
+            raise ImportError("No module named 'dotenv'")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    assert webapp_module._load_dotenv_with_library(tmp_path / ".env") is False  # pyright: ignore[reportPrivateUsage]
+
+
+def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "# comment line",
+                "export QUOTED='hello world'",
+                "INLINE=value # inline comment",
+                "BARE=value2",
+                "LEADING=# comment",
+                "EMPTY=",
+                "EMBEDDED=abc#123",
+                "export NO_EQUALS",
+                "=skip-me",
+                "",
+            ]
+        )
+    )
+
+    def fake_loader(_path: Path) -> bool:
+        return False
+
+    monkeypatch.setattr(webapp_module, "_load_dotenv_with_library", fake_loader)
+    monkeypatch.delenv("QUOTED", raising=False)
+    monkeypatch.setenv("INLINE", "preexisting")
+    monkeypatch.delenv("BARE", raising=False)
+    monkeypatch.delenv("LEADING", raising=False)
+    monkeypatch.delenv("EMPTY", raising=False)
+    monkeypatch.delenv("EMBEDDED", raising=False)
+
+    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
+
+    assert os.environ["QUOTED"] == "hello world"
+    assert os.environ["INLINE"] == "preexisting"  # existing value not overridden
+    assert os.environ["BARE"] == "value2"
+    assert os.environ["LEADING"] == ""
+    assert os.environ["EMPTY"] == ""
+    assert os.environ["EMBEDDED"] == "abc#123"
+    assert "NO_EQUALS" not in os.environ
+    assert "skip-me" not in os.environ
+
+    for key in ("QUOTED", "BARE", "EMPTY", "EMBEDDED"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_serve_frontend_missing_dist(tmp_path: Path) -> None:
+    app = create_app({"FRONTEND_DIST": str(tmp_path / "missing"), "RUNS_OUTDIR": str(tmp_path / "runs")})
+    client = app.test_client()
+    response = client.get("/")
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert isinstance(payload, dict)
+    assert payload["error"] == "Frontend assets not found."
+
+
+def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "index.html").write_text("<html>ok</html>")
+    (dist_dir / "bundle.js").write_text("console.log('hi')")
+
+    app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
+    client = app.test_client()
+
+    response = client.get("/bundle.js")
+    assert response.status_code == 200
+    assert response.data == b"console.log('hi')"
+
+    traversal = client.get("/../secret.txt")
+    assert traversal.status_code == 400
+    traversal_payload = traversal.get_json()
+    assert isinstance(traversal_payload, dict)
+    assert traversal_payload["error"] == "Invalid path"
+
+    fallback = client.get("/")
+    assert fallback.status_code == 200
+    assert b"<html>ok</html>" in fallback.data
+
+    fallback_asset = client.get("/missing.js")
+    assert fallback_asset.status_code == 200
+    assert b"<html>ok</html>" in fallback_asset.data
 
 
 def test_job_manager_completes_run(tmp_path: Path) -> None:
