@@ -3,10 +3,10 @@
   "compilerOptions": {
     "moduleResolution": "bundler",
     "module": "ESNext",
-    "target": "ES2020",
+    "target": "ES2024",
     "useDefineForClassFields": true,
     "baseUrl": ".",
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
+    "lib": ["DOM", "DOM.Iterable", "ES2024"],
     "types": ["vite/client", "node", "vitest"],
     "paths": {
       "@/*": ["src/*"]
