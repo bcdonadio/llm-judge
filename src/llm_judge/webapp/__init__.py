@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Type, cast
 
 from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
@@ -12,16 +12,21 @@ from .job_manager import JobManager
 from ..runner import RunnerConfig, RunnerControl, RunnerEvent, LLMJudgeRunner
 from ..infrastructure.utility_services import FileSystemService
 
-# Optional import for DI support
-try:
-    from ..container import ServiceContainer  # pyright: ignore[reportUnusedImport]
-    from ..factories import RunnerFactory  # pyright: ignore[reportUnusedImport]
+if TYPE_CHECKING:
+    from ..container import ServiceContainer as ServiceContainerType
+    from ..factories import RunnerFactory as RunnerFactoryType
+else:
+    ServiceContainerType = Any  # type: ignore[assignment]
+    RunnerFactoryType = Any  # type: ignore[assignment]
 
-    has_di_support = True
+try:
+    from ..factories import RunnerFactory as _RuntimeRunnerFactory
 except ImportError:
     has_di_support = False
-    ServiceContainer = None  # type: ignore
-    RunnerFactory = None  # type: ignore
+    _runner_factory: Optional[Type[Any]] = None
+else:
+    has_di_support = True
+    _runner_factory = _RuntimeRunnerFactory
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 frontend_bp = Blueprint("frontend", __name__)
@@ -209,7 +214,7 @@ def serve_frontend(path: str) -> Response:
 
 def create_app(
     config: Dict[str, Any] | None = None,
-    container: Optional[Any] = None,  # ServiceContainer type when available
+    container: Optional[ServiceContainerType] = None,
 ) -> Flask:
     """Factory for the Flask web application.
 
@@ -246,10 +251,10 @@ def create_app(
     ] = None
 
     if container is not None and has_di_support:
-        # Use DI-based runner factory
-        from ..factories import RunnerFactory as RunnerFactoryClass
-
-        factory = RunnerFactoryClass(container)
+        if _runner_factory is None:
+            raise RuntimeError("Dependency injection support is not available.")
+        typed_container = container
+        factory: RunnerFactoryType = _runner_factory(typed_container)
 
         def di_runner_factory(
             config: RunnerConfig,

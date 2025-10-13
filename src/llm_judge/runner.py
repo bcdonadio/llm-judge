@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, cast
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, cast, overload
 
 from colorama import Fore, Style
 
@@ -50,6 +50,17 @@ CSV_FIELDNAMES = [
     "raw_followup_path",
     "raw_judge_path",
 ]
+
+
+class CsvWriter(Protocol):
+    def writeheader(self) -> Any:
+        """Write the CSV header."""
+        raise NotImplementedError
+
+    def writerow(self, rowdict: Mapping[str, Any]) -> Any:
+        """Write a single row to the CSV output."""
+        _ = rowdict
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -589,7 +600,7 @@ class LLMJudgeRunner:
         self,
         prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
-        writer: csv.DictWriter[Any],
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         for model in self.config.models:
@@ -604,7 +615,7 @@ class LLMJudgeRunner:
         model: str,
         prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
-        writer: csv.DictWriter[Any],
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         model_dir = runs_dir / str(model).replace("/", "_")
@@ -620,31 +631,91 @@ class LLMJudgeRunner:
                 return True
         return False
 
-    def _process_prompt(self, model: str, model_dir: Path, *args: Any) -> bool:
-        if len(args) == 3:
-            prompt_candidate, writer_candidate, summary_candidate = args
-            if not isinstance(prompt_candidate, Prompt):
-                raise TypeError("Expected Prompt instance for modern call path")
-            prompt_obj = prompt_candidate
-            writer = cast(csv.DictWriter[Any], writer_candidate)
-            summary_data = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
-        elif len(args) == 4:
-            prompt_index = int(args[0])
-            prompt_text = cast(str, args[1])
-            writer = cast(csv.DictWriter[Any], args[2])
-            summary_data = cast(Dict[str, List[Dict[str, Any]]], args[3])
-            prompt_obj = Prompt(text=prompt_text, category="legacy", index=prompt_index)
-        else:
-            raise TypeError("Unsupported signature for _process_prompt")
+    @overload
+    def _process_prompt(
+        self,
+        model: str,
+        model_dir: Path,
+        prompt: Prompt,
+        writer: CsvWriter,
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        pass
 
-        return self._process_prompt_impl(model, model_dir, prompt_obj, writer, summary_data)
+    @overload
+    def _process_prompt(
+        self,
+        model: str,
+        model_dir: Path,
+        prompt_index: int,
+        prompt_text: str,
+        writer: CsvWriter,
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        pass
+
+    def _process_prompt(  # type: ignore[misc]
+        self,
+        model: str,
+        model_dir: Path,
+        prompt_or_index: Prompt | int,
+        *args: Any,
+    ) -> bool:
+        prompt_obj, writer, summary = self._normalize_prompt_inputs(prompt_or_index, args)
+        return self._process_prompt_impl(model, model_dir, prompt_obj, writer, summary)
+
+    def _normalize_prompt_inputs(
+        self,
+        prompt_or_index: Prompt | int,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if isinstance(prompt_or_index, Prompt):
+            return self._normalize_modern_prompt(prompt_or_index, args)
+        if not isinstance(prompt_or_index, int):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError("Unsupported prompt argument; expected Prompt or prompt index.")
+        return self._normalize_legacy_prompt(prompt_or_index, args)
+
+    def _normalize_modern_prompt(
+        self,
+        prompt_obj: Prompt,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if len(args) != 2:
+            raise TypeError("Modern call path requires writer and summary arguments.")
+        writer_candidate, summary_candidate = args
+        if not isinstance(writer_candidate, csv.DictWriter):
+            raise TypeError("Expected csv.DictWriter for writer.")
+        if not isinstance(summary_candidate, dict):
+            raise TypeError("Expected summary dictionary for modern call path.")
+        writer = cast(CsvWriter, writer_candidate)
+        summary = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
+        return prompt_obj, writer, summary
+
+    def _normalize_legacy_prompt(
+        self,
+        prompt_index: int,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if len(args) != 3:
+            raise TypeError("Legacy call requires prompt text, writer, and summary data.")
+        prompt_text, writer_candidate, summary_candidate = args
+        if not isinstance(prompt_text, str):
+            raise TypeError("Legacy call requires prompt text as a string.")
+        if not isinstance(writer_candidate, csv.DictWriter):
+            raise TypeError("Legacy call requires a csv.DictWriter instance.")
+        if not isinstance(summary_candidate, dict):
+            raise TypeError("Legacy call requires summary dictionary.")
+        writer = cast(CsvWriter, writer_candidate)
+        summary = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
+        prompt_obj = Prompt(text=prompt_text, category="legacy", index=prompt_index)
+        return prompt_obj, writer, summary
 
     def _process_prompt_impl(
         self,
         model: str,
         model_dir: Path,
         prompt: Prompt,
-        writer: csv.DictWriter[Any],
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         if self._should_stop():
@@ -860,7 +931,7 @@ class LLMJudgeRunner:
         cancelled = False
 
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
-            writer: csv.DictWriter[Any] = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
+            writer: CsvWriter = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             cancelled = self._process_models(prompts, runs_dir, writer, summary_data)
 

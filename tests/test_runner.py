@@ -43,6 +43,10 @@ def _fake_judge_decision(**_: Any) -> Dict[str, Any]:
     }
 
 
+def _fake_evaluate_responses(*_: Any, **__: Any) -> JudgeDecision:
+    return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
+
+
 def _fake_now() -> str:
     return "now"
 
@@ -211,11 +215,7 @@ def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
     control = StopAfterSummary()
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-
-    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
-        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
-
-    cast(Any, runner)._evaluate_responses = fake_evaluate
+    cast(Any, runner)._evaluate_responses = _fake_evaluate_responses
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -239,11 +239,7 @@ def test_process_prompt_cancels_after_followup(tmp_path: Path) -> None:
     control._calls = 1  # Will stop on next check (second sleep call)
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-
-    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
-        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
-
-    cast(Any, runner)._evaluate_responses = fake_evaluate
+    cast(Any, runner)._evaluate_responses = _fake_evaluate_responses
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -281,11 +277,7 @@ def test_process_prompt_cancels_before_judge(tmp_path: Path) -> None:
     control = StopBeforeJudge()
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-
-    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
-        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
-
-    cast(Any, runner)._evaluate_responses = fake_evaluate
+    cast(Any, runner)._evaluate_responses = _fake_evaluate_responses
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -804,9 +796,9 @@ def test_process_prompt_signature_errors(tmp_path: Path) -> None:
     writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
     writer.writeheader()
     with pytest.raises(TypeError):
-        runner._process_prompt("model", tmp_path, "not-a-prompt", writer, {})
+        runner._process_prompt("model", tmp_path, "not-a-prompt", writer, {})  # type: ignore[call-overload]
     with pytest.raises(TypeError):
-        runner._process_prompt("model", tmp_path)
+        runner._process_prompt("model", tmp_path)  # type: ignore[call-overload]
 
 
 def test_normalize_result_section_handles_non_dict() -> None:

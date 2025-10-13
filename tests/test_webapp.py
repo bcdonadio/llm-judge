@@ -125,6 +125,8 @@ class StubContainer:
         self._resolver = resolver
 
     def resolve(self, key: Any) -> Any:
+        if key not in self._resolver:
+            raise KeyError(f"No registration for {key}")
         return self._resolver[key]
 
 
@@ -785,7 +787,7 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         }
     )
 
-    app = create_app({"RUNS_OUTDIR": str(tmp_path)}, container=container)
+    app = create_app({"RUNS_OUTDIR": str(tmp_path)}, container=container)  # type: ignore[arg-type]
     manager = cast(JobManager, app.config["JOB_MANAGER"])
     assert isinstance(manager, JobManager)
     config = RunnerConfig(
