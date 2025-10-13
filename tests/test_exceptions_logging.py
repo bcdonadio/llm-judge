@@ -60,6 +60,25 @@ def test_configure_logging_and_threadsafe_logger(tmp_path: Path) -> None:
     assert log_file.exists()
 
 
+def test_configure_logging_default_format() -> None:
+    configure_logging()
+    root = logging.getLogger()
+    handler = root.handlers[0]
+    formatter = handler.formatter
+    assert formatter is not None
+    expected = "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
+    assert formatter._style._fmt == expected
+
+
+def test_configure_logging_custom_format() -> None:
+    configure_logging(level="WARNING", format_string="%(levelname)s:%(message)s")
+    root = logging.getLogger()
+    handler = root.handlers[0]
+    formatter = handler.formatter
+    assert formatter is not None
+    assert formatter._style._fmt == "%(levelname)s:%(message)s"
+
+
 def test_structured_formatter_adds_exception_context() -> None:
     stream = StringIO()
     handler = logging.StreamHandler(stream)
@@ -77,6 +96,15 @@ def test_structured_formatter_adds_exception_context() -> None:
     handler.flush()
     output = stream.getvalue()
     assert "judge" in output
+
+
+def test_structured_formatter_without_context() -> None:
+    formatter = StructuredFormatter("%(message)s")
+    record = logging.LogRecord("logger", logging.ERROR, __file__, 0, "message", args=(), exc_info=None)
+    exc = LLMJudgeException("oops")
+    record.exc_info = (LLMJudgeException, exc, None)
+    formatted = formatter.format(record)
+    assert formatted.startswith("message")
 
 
 def test_log_context_manager_returns_self() -> None:

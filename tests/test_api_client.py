@@ -1,6 +1,8 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import sys
+import logging
 from typing import Any, Dict, Optional
 
 import pytest
@@ -46,6 +48,7 @@ class DummyRawResponse:
 class DummyChatCompletions:
     def __init__(self, payload: Dict[str, Any]) -> None:
         self._payload = payload
+        self.raise_error = False
 
     @property
     def with_raw_response(self) -> DummyChatCompletions:
@@ -53,6 +56,8 @@ class DummyChatCompletions:
 
     def create(self, **kwargs: Any) -> DummyRawResponse:
         self.last_kwargs = kwargs
+        if self.raise_error:
+            raise OpenAIError("failure")
         return DummyRawResponse(self._payload)
 
 
@@ -64,6 +69,14 @@ class DummyChat:
 class DummyOpenAI:
     def __init__(self, *, payload: Dict[str, Any], **_: Any) -> None:
         self.chat = DummyChat(payload)
+
+
+class CountingOpenAI(DummyOpenAI):
+    calls = 0
+
+    def __init__(self, *, payload: Dict[str, Any], **kwargs: Any) -> None:
+        CountingOpenAI.calls += 1
+        super().__init__(payload=payload, **kwargs)
 
 
 class DummyHTTPClient:
@@ -185,3 +198,151 @@ def test_chat_completion_error(monkeypatch: pytest.MonkeyPatch) -> None:
             temperature=0.0,
             metadata={"title": "Test"},
         )
+
+
+def test_logging_without_color(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    payload = {"choices": [{"message": {"content": ""}}]}
+    caplog.set_level(logging.INFO)
+    _run_completion(
+        monkeypatch,
+        payload,
+        extra_kwargs={"step": "Initial", "prompt_index": 2, "use_color": False},
+    )
+    assert any("[Request 02]" in message for message in caplog.messages)
+
+
+def test_client_reuses_cached_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {"choices": [{"message": {"content": "cached"}}]}
+
+    def factory(**kwargs: Any) -> CountingOpenAI:
+        return CountingOpenAI(payload=payload, **kwargs)
+
+    CountingOpenAI.calls = 0
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", DummyHTTPClient)
+
+    client = OpenRouterClient(api_key="key")
+    client.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=2,
+        temperature=0.1,
+        metadata={"title": "t"},
+    )
+    client.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=2,
+        temperature=0.1,
+        metadata={"title": "t"},
+    )
+    client.close()
+
+    assert CountingOpenAI.calls == 1
+
+
+def test_logging_with_colorama(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    payload = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
+
+    caplog.set_level(logging.INFO)
+
+    response = _run_completion(
+        monkeypatch,
+        payload,
+        extra_kwargs={"step": "Initial", "prompt_index": 3, "use_color": True},
+    )
+    assert response.finish_reason == "stop"
+    assert any("Initial" in message for message in caplog.messages)
+
+
+def test_chat_completion_logs_error(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    def factory(**kwargs: Any) -> DummyOpenAI:
+        dummy = DummyOpenAI(payload={"choices": [{"message": {"content": ""}}]}, **kwargs)
+        dummy.chat.completions.raise_error = True
+        return dummy
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", DummyHTTPClient)
+
+    client = OpenRouterClient(api_key="key")
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(OpenAIError):
+        client.chat_completion(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+            temperature=0.0,
+            metadata={"title": "T"},
+        )
+    assert any("API request failed" in message for message in caplog.messages)
+
+
+def test_extract_text_variants() -> None:
+    payload_string = {"choices": [{"message": {"content": "plain"}}]}
+    payload_list = {"choices": [{"message": {"content": ["a", {"text": "b"}]}}]}
+    payload_invalid = {"invalid": True}
+
+    assert OpenRouterClient._extract_text(payload_string) == "plain"
+    assert OpenRouterClient._extract_text(payload_list) == "ab"
+    assert OpenRouterClient._extract_text(payload_invalid) == ""
+
+
+def test_extract_text_tool_call_missing_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"arguments": "  "}},
+                        {"invalid": True},
+                    ],
+                }
+            }
+        ]
+    }
+
+    result = _run_completion(monkeypatch, payload)
+    assert result.text == ""
+
+
+def test_extract_text_segment_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": [
+                        {"text": "alpha"},
+                        {"text": b"bytes"},
+                        "beta",
+                    ]
+                }
+            }
+        ]
+    }
+
+    result = _run_completion(monkeypatch, payload)
+    assert result.text == "alphabytesbeta"
+
+
+def test_extract_text_skips_non_string_text_value() -> None:
+    payload = {"choices": [{"message": {"content": [{"text": 123}]}}]}
+    assert OpenRouterClient._extract_text(payload) == ""
+
+
+def test_context_manager_closes_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    def factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": [{"message": {"content": "ctx"}}]}, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", DummyHTTPClient)
+
+    with OpenRouterClient(api_key="key") as client:
+        result = client.chat_completion(
+            model="model",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1,
+            temperature=0.0,
+            metadata={"title": "T"},
+        )
+        assert result.text == "ctx"

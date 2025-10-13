@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import json
@@ -91,3 +92,60 @@ def test_parse_env_value_json(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ConfigurationManager()
     monkeypatch.setenv("JSON_VALUE", '{"a": 1}')
     assert manager.get("json.value")["a"] == 1
+
+
+def test_auto_reload_without_file() -> None:
+    manager = ConfigurationManager(auto_reload=True)
+    assert manager.get("missing", default="fallback") == "fallback"
+
+
+def test_nested_lookup_handles_none_and_non_mapping() -> None:
+    manager = ConfigurationManager()
+    manager.set("path.to.value", None)
+    assert manager.get("path.to.value", default="fallback") == "fallback"
+
+    manager.set("path", "string")
+    assert manager.get("path.deeper", default=5) == 5
+
+
+def test_get_section_non_dict_returns_empty() -> None:
+    manager = ConfigurationManager()
+    manager.set("section", "value")
+    assert manager.get_section("section") == {}
+
+
+def test_reload_without_file_sets_loaded() -> None:
+    manager = ConfigurationManager()
+    manager.reload()
+    assert manager.get_all() == {}
+
+
+def test_get_section_auto_reload(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("section:\n  key: value\n")
+    manager = ConfigurationManager(config_file=cfg, auto_reload=True)
+    manager._loaded = False
+    section = manager.get_section("section")
+    assert section["key"] == "value"
+
+
+def test_reload_rejects_non_mapping(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("- item\n")
+    with pytest.raises(TypeError):
+        ConfigurationManager(config_file=cfg)
+
+
+def test_get_all_triggers_auto_reload(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"value": 1}))
+    manager = ConfigurationManager(config_file=cfg, auto_reload=True)
+    manager._loaded = False
+    data = manager.get_all()
+    assert data["value"] == 1
+
+
+def test_parse_env_value_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = ConfigurationManager()
+    monkeypatch.setenv("STRING_VALUE", "plain")
+    assert manager.get("string.value") == "plain"

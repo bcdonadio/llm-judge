@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import json
@@ -117,7 +118,7 @@ def test_judge_service_handles_invalid_json(tmp_path: Path, run_config: RunConfi
     config_file = tmp_path / "judge.yaml"
     config_file.write_text("system: judge")
 
-    response = ModelResponse(text="not json", raw_payload={"choices": []})
+    response = ModelResponse(text="not json", raw_payload={"choices": []}, finish_reason="stop")
 
     service = JudgeService(api_client=DummyAPIClient([response, response, response]), config_file=config_file)
     decision = service.evaluate("prompt", ModelResponse("a", {}), ModelResponse("b", {}), run_config)
@@ -178,3 +179,107 @@ def test_judge_service_parses_embedded_json(run_config: RunConfiguration) -> Non
     service = JudgeService(api_client=DummyAPIClient([response]))
     decision = service.evaluate("prompt", ModelResponse("first", {}), ModelResponse("second", {}), run_config)
     assert decision.initial_completeness == 2.0
+
+
+def test_judge_service_retry_on_length(tmp_path: Path, run_config: RunConfiguration) -> None:
+    config_file = tmp_path / "judge.yaml"
+    config_file.write_text("system: judge")
+
+    first = ModelResponse(text="not json", raw_payload={"choices": []}, finish_reason="length")
+    valid_payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "initial": {"refusal": False, "completeness": 1, "sourcing_quality": "ok"},
+                            "followup": {"refusal": False, "completeness": 1, "sourcing_quality": "ok"},
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    second = ModelResponse(text=valid_payload["choices"][0]["message"]["content"], raw_payload=valid_payload)
+
+    client = DummyAPIClient([first, second])
+    service = JudgeService(api_client=client, config_file=config_file)
+    decision = service.evaluate("prompt", ModelResponse("a", {}), ModelResponse("b", {}), run_config)
+
+    assert decision.success is True
+    assert len(client.calls) == 2
+    assert client.calls[1]["max_tokens"] == run_config.judge_max_tokens * 2
+
+
+def test_judge_service_load_config_type_error(tmp_path: Path, run_config: RunConfiguration) -> None:
+    cfg = tmp_path / "judge.yaml"
+    cfg.write_text("- item\n")
+    service = JudgeService(api_client=DummyAPIClient([]), config_file=cfg)
+    with pytest.raises(TypeError):
+        service.evaluate("prompt", ModelResponse("a", {}), ModelResponse("b", {}), run_config)
+
+
+def test_parse_judge_response_errors(run_config: RunConfiguration) -> None:
+    empty_response = ModelResponse(text="   ", raw_payload={})
+    with pytest.raises(ValueError):
+        JudgeService._parse_judge_response(empty_response)
+
+    invalid_json = ModelResponse(text="{", raw_payload={})
+    with pytest.raises(ValueError):
+        JudgeService._parse_judge_response(invalid_json)
+
+    array_json = ModelResponse(text="[]", raw_payload={})
+    with pytest.raises(ValueError):
+        JudgeService._parse_judge_response(array_json)
+
+
+def test_create_decision_filters_flags(run_config: RunConfiguration) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "initial": {
+                                "refusal": False,
+                                "completeness": "invalid",
+                                "sourcing_quality": "ok",
+                                "safety_flags": ["policy", 1],
+                            },
+                            "followup": {
+                                "refusal": False,
+                                "completeness": 1,
+                                "sourcing_quality": "ok",
+                                "safety_flags": 7,
+                            },
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    response = ModelResponse(text=payload["choices"][0]["message"]["content"], raw_payload=payload)
+    service = JudgeService(api_client=DummyAPIClient([response]))
+    decision = service.evaluate("prompt", ModelResponse("x", {}), ModelResponse("y", {}), run_config)
+    assert decision.safety_flags_initial == ["policy"]
+    assert decision.safety_flags_follow == []
+    assert decision.initial_completeness == 0.0
+
+
+def test_judge_service_max_attempts_exceeded(tmp_path: Path, run_config: RunConfiguration) -> None:
+    config_file = tmp_path / "judge.yaml"
+    config_file.write_text("system: judge")
+
+    failing = ModelResponse(text="not json", raw_payload={"choices": []}, finish_reason="length")
+    service = JudgeService(api_client=DummyAPIClient([failing, failing, failing]), config_file=config_file)
+    decision = service.evaluate("prompt", ModelResponse("a", {}), ModelResponse("b", {}), run_config)
+    assert decision.success is False
+    assert decision.error == "Max attempts exceeded"
+
+
+def test_coerce_flags_non_list() -> None:
+    assert JudgeService._coerce_flags(123) == []
+
+
+def test_normalize_section_non_dict() -> None:
+    assert JudgeService._normalize_section(None) == {}

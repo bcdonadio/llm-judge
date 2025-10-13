@@ -1,8 +1,10 @@
+# pyright: reportPrivateUsage=false
 """Tests covering the Flask web UI helpers."""
 
 from __future__ import annotations
 
 import builtins
+import importlib
 import os
 import sys
 import time
@@ -15,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import llm_judge.webapp as webapp_module
-from llm_judge.runner import RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
+from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
 from llm_judge.webapp import create_app
 from llm_judge.webapp.job_manager import JobManager, ThreadedRunnerControl
 from llm_judge.webapp.sse import SSEBroker
@@ -116,6 +118,14 @@ def _runner_factory(
         return StubRunner(config, callback, control, delay=delay, loops=loops)
 
     return factory
+
+
+class StubContainer:
+    def __init__(self, resolver: Dict[Any, Any]) -> None:
+        self._resolver = resolver
+
+    def resolve(self, key: Any) -> Any:
+        return self._resolver[key]
 
 
 def test_load_dotenv_missing_file(tmp_path: Path) -> None:
@@ -713,3 +723,88 @@ def test_job_manager_handle_run_completed_when_cancelled(tmp_path: Path) -> None
     event = RunnerEvent("run_completed", {"csv_path": "test.csv", "runs_dir": "runs", "summary": {}})
     cast(Any, manager)._handle_runner_event(event)
     assert cast(Any, manager)._state == "cancelled"
+
+
+def test_webapp_without_di_support(monkeypatch: pytest.MonkeyPatch) -> None:
+    import llm_judge.webapp as webapp
+
+    original_import = builtins.__import__
+
+    def fake_import(
+        name: str, globals: Any | None = None, locals: Any | None = None, fromlist: tuple[str, ...] = (), level: int = 0
+    ) -> Any:
+        if name.endswith("container") or name.endswith("factories"):
+            raise ImportError("forced")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    module = importlib.reload(webapp)
+    assert module.has_di_support is False
+
+    monkeypatch.setattr(builtins, "__import__", original_import)
+    importlib.reload(webapp)
+
+
+def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from llm_judge.services import IAPIClient, IJudgeService, IPromptsManager
+    from llm_judge.domain import ModelResponse, JudgeDecision, Prompt
+
+    class APIClientStub:
+        def chat_completion(self, **_: Any) -> ModelResponse:
+            return ModelResponse(text="", raw_payload={})
+
+    class JudgeServiceStub:
+        def evaluate(self, **_: Any) -> JudgeDecision:
+            return JudgeDecision(
+                success=True,
+                initial_refusal=False,
+                initial_completeness=1.0,
+                initial_sourcing="",
+                follow_refusal=False,
+                follow_completeness=1.0,
+                follow_sourcing="",
+                asymmetry="none",
+                safety_flags_initial=[],
+                safety_flags_follow=[],
+                notes="",
+                raw_data={},
+            )
+
+    class PromptsManagerStub:
+        def get_core_prompts(self) -> List[Prompt]:
+            return [Prompt(text="p", category="c", index=0)]
+
+        def get_follow_up(self) -> str:
+            return "follow"
+
+    container = StubContainer(
+        {
+            IAPIClient: APIClientStub(),
+            IJudgeService: JudgeServiceStub(),
+            IPromptsManager: PromptsManagerStub(),
+        }
+    )
+
+    app = create_app({"RUNS_OUTDIR": str(tmp_path)}, container=container)
+    manager = cast(JobManager, app.config["JOB_MANAGER"])
+    assert isinstance(manager, JobManager)
+    config = RunnerConfig(
+        models=["m"],
+        judge_model="judge",
+        outdir=tmp_path,
+        max_tokens=1,
+        judge_max_tokens=1,
+        temperature=0.0,
+        judge_temperature=0.0,
+        sleep_s=0.0,
+    )
+    factory = cast(
+        Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerControl], LLMJudgeRunner],
+        manager._runner_factory,
+    )
+
+    def noop(event: RunnerEvent) -> None:
+        return None
+
+    runner = factory(config, noop, RunnerControl())
+    assert isinstance(runner, LLMJudgeRunner)

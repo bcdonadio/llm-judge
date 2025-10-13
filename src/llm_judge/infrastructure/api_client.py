@@ -161,6 +161,13 @@ class OpenRouterClient(IAPIClient):
                         text_value = item_dict.get("text")
                         if isinstance(text_value, str):
                             texts.append(text_value)
+                            continue
+                        if isinstance(text_value, bytes):
+                            try:
+                                texts.append(text_value.decode("utf-8"))
+                            except Exception:  # pragma: no cover - defensive
+                                continue
+                            continue
                         continue
                     texts.append(item)
                 combined = "".join(texts)

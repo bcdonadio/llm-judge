@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import csv
@@ -34,6 +35,7 @@ def test_results_repository_writes_and_closes(tmp_path: Path) -> None:
     repo.add_result({"a": 1, "b": 2})
     repo.flush()
     repo.close()
+    repo.flush()  # no-op after close
 
     with csv_path.open("r", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
@@ -48,3 +50,20 @@ def test_unit_of_work_context(tmp_path: Path) -> None:
         unit.rollback()
 
     assert (tmp_path / "res.csv").exists()
+
+
+def test_results_repository_handles_missing_writer(tmp_path: Path) -> None:
+    csv_path = tmp_path / "lazy.csv"
+    repo = ResultsRepository(csv_path, ["a"])
+    repo._initialized = True
+    repo._writer = None
+    repo._file_handle = None
+    repo.add_result({"a": 1})
+
+
+def test_results_repository_get_path_and_double_close(tmp_path: Path) -> None:
+    csv_path = tmp_path / "paths.csv"
+    repo = ResultsRepository(csv_path, ["x"])
+    assert repo.get_csv_path() is csv_path
+    repo.close()
+    repo.close()

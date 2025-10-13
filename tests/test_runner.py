@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Sequence, cast
 
 import pytest
 
+from llm_judge.domain import JudgeDecision, ModelResponse, Prompt, RunConfiguration
 from llm_judge.runner import (
     CSV_FIELDNAMES,
     LLMJudgeRunner,
@@ -600,3 +601,203 @@ def test_run_suite_uses_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
 
     assert isinstance(artifacts, RunArtifacts)
     assert called["config"].judge_model == "judge"
+
+
+class DummyPromptsManager:
+    def get_core_prompts(self) -> List[Prompt]:
+        return [Prompt(text="pm", category="core", index=0)]
+
+    def get_follow_up(self) -> str:
+        return "follow"
+
+    def get_probes(self) -> List[str]:
+        return []
+
+
+class DummyAPIClientRunner:
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def chat_completion(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        metadata: Dict[str, str],
+        response_format: Dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> ModelResponse:
+        call = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "metadata": metadata,
+            "response_format": response_format,
+        }
+        call.update(kwargs)
+        self.calls.append(call)
+        return ModelResponse(text="api", raw_payload={"data": 1})
+
+    def close(self) -> None:
+        return None
+
+
+class DummyJudgeServiceRunner:
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def evaluate(
+        self,
+        prompt: str,
+        initial_response: ModelResponse,
+        follow_response: ModelResponse,
+        config: RunConfiguration,
+    ) -> JudgeDecision:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "initial": initial_response,
+                "follow": follow_response,
+                "config": config,
+            }
+        )
+        return JudgeDecision(
+            success=True,
+            initial_refusal=False,
+            initial_completeness=1.0,
+            initial_sourcing="ok",
+            follow_refusal=False,
+            follow_completeness=1.0,
+            follow_sourcing="ok",
+            asymmetry="none",
+            safety_flags_initial=[],
+            safety_flags_follow=[],
+            notes="",
+            raw_data={},
+        )
+
+
+def test_prompts_manager_paths(tmp_path: Path) -> None:
+    cfg = build_config(tmp_path, models=[], verbose=False)
+    runner = LLMJudgeRunner(cfg, prompts_manager=DummyPromptsManager())
+    prompts = runner._load_prompts()
+    assert prompts[0].text == "pm"
+    assert runner._get_follow_up_prompt() == "follow"
+
+
+def test_load_prompts_legacy_import(tmp_path: Path) -> None:
+    cfg = build_config(tmp_path, models=[])
+    runner = LLMJudgeRunner(cfg)
+    prompts = runner._load_prompts()
+    assert isinstance(prompts[0], Prompt)
+
+
+def test_verbose_log_judge_without_payload(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    cfg = build_config(tmp_path, models=[], verbose=True)
+    runner = LLMJudgeRunner(cfg)
+    caplog.set_level(logging.INFO, logger="llm_judge.runner")
+    runner._verbose_log_judge(None, judge_result=None)
+    assert not caplog.messages
+
+
+def test_fetch_completion_with_api_client_and_metadata(tmp_path: Path) -> None:
+    api_client = DummyAPIClientRunner()
+    cfg = build_config(tmp_path, models=["model"])
+    runner = LLMJudgeRunner(cfg, api_client=api_client)
+    text, payload = runner._fetch_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=5,
+        temperature=0.2,
+        metadata={"extra": "value"},
+        step="Initial",
+        prompt_index=0,
+    )
+    assert text == "api"
+    assert payload == {"data": 1}
+    assert api_client.calls[0]["metadata"]["extra"] == "value"
+
+
+def test_fetch_completion_legacy_openrouter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = build_config(tmp_path, models=["m"])
+    runner = LLMJudgeRunner(cfg)
+
+    def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
+        assert kwargs["step"] == "Initial"
+        return {"choices": [{"message": {"content": "legacy"}}]}
+
+    monkeypatch.setattr("llm_judge.api.openrouter_chat", fake_chat)
+    text, payload = runner._fetch_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=1,
+        temperature=0.0,
+        metadata=None,
+        step="Initial",
+        prompt_index=0,
+    )
+    assert text == "legacy"
+    assert payload["choices"]
+
+
+def test_evaluate_responses_with_judge_service(tmp_path: Path) -> None:
+    api_client = DummyAPIClientRunner()
+    judge_service = DummyJudgeServiceRunner()
+    cfg = build_config(tmp_path, models=["m"])
+    runner = LLMJudgeRunner(cfg, api_client=api_client, judge_service=judge_service)
+    decision = runner._evaluate_responses("prompt", "init", "follow", 0)
+    assert decision.success is True
+    assert judge_service.calls
+
+
+def test_evaluate_responses_legacy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cfg = build_config(tmp_path, models=["m"])
+    runner = LLMJudgeRunner(cfg)
+
+    def fake_judge(**kwargs: Any) -> Dict[str, Any]:
+        assert kwargs["prompt_index"] == 0
+        return {
+            "ok": True,
+            "decision": {
+                "initial": {"refusal": False, "completeness": 1, "sourcing_quality": "ok"},
+                "followup": {"refusal": False, "completeness": 1, "sourcing_quality": "ok"},
+            },
+        }
+
+    monkeypatch.setattr("llm_judge.judging.judge_decide", fake_judge)
+    decision = runner._evaluate_responses("prompt", "i", "f", 0)
+    assert decision.success is True
+
+
+def test_convert_legacy_judge_result_defaults(tmp_path: Path) -> None:
+    data = {
+        "ok": False,
+        "decision": {
+            "initial": {"refusal": False, "completeness": "bad", "sourcing_quality": None, "safety_flags": [1, "a"]},
+            "followup": {"refusal": False, "completeness": None, "sourcing_quality": None, "safety_flags": ["b", 2]},
+            "asymmetry_leading": None,
+            "final_notes": None,
+        },
+        "error": "error",
+    }
+    decision = LLMJudgeRunner._convert_legacy_judge_result(data)
+    assert decision.asymmetry == "unclear"
+    assert decision.notes == ""
+    assert decision.safety_flags_initial == ["a"]
+    assert decision.safety_flags_follow == ["b"]
+
+
+def test_process_prompt_signature_errors(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["m"]))
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+    with pytest.raises(TypeError):
+        runner._process_prompt("model", tmp_path, "not-a-prompt", writer, {})
+    with pytest.raises(TypeError):
+        runner._process_prompt("model", tmp_path)
+
+
+def test_normalize_result_section_handles_non_dict() -> None:
+    assert LLMJudgeRunner._normalize_result_section(None) == {}
