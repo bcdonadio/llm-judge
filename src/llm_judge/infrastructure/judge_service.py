@@ -1,0 +1,223 @@
+"""Thread-safe judge evaluation service implementation."""
+
+import json
+import threading
+import logging
+from typing import Any, Dict, Iterable, List, Optional, cast
+from pathlib import Path
+from importlib import resources
+
+import yaml
+
+from ..domain import ModelResponse, JudgeDecision, RunConfiguration
+from ..services import IJudgeService, IAPIClient
+
+
+class JudgeService(IJudgeService):
+    """Thread-safe judge evaluation service."""
+
+    def __init__(
+        self, api_client: IAPIClient, config_file: Optional[Path] = None, logger: Optional[logging.Logger] = None
+    ):
+        self._api_client = api_client
+        self._config_file = config_file
+        self._logger = logger or logging.getLogger(__name__)
+        self._lock = threading.RLock()
+        self._config_cache: Optional[Dict[str, Any]] = None
+
+    def _load_config(self) -> Dict[str, Any]:
+        """Load judge configuration."""
+        with self._lock:
+            if self._config_cache is not None:
+                return self._config_cache
+
+            if self._config_file:
+                with open(self._config_file, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+            else:
+                resource = resources.files("llm_judge") / "judge_config.yaml"
+                with resource.open("r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+
+            if not isinstance(data, dict):
+                raise TypeError("Judge configuration must be a mapping")
+
+            config_data = cast(Dict[str, Any], data)
+            self._config_cache = config_data
+            return config_data
+
+    def evaluate(
+        self, prompt: str, initial_response: ModelResponse, follow_response: ModelResponse, config: RunConfiguration
+    ) -> JudgeDecision:
+        """Evaluate responses and return judge decision."""
+        judge_config = self._load_config()
+
+        # Build evaluation messages
+        messages = self._build_messages(judge_config, prompt, initial_response.text, follow_response.text)
+
+        # Request judgment with retries
+        max_attempts = 3
+        current_max_tokens = config.judge_max_tokens
+        response = None
+
+        for attempt in range(max_attempts):
+            try:
+                response = self._api_client.chat_completion(
+                    model=config.judge_model,
+                    messages=messages,
+                    max_tokens=current_max_tokens,
+                    temperature=config.judge_temperature,
+                    metadata={"title": "Judge Evaluation"},
+                    response_format={"type": "json_object"},
+                )
+
+                # Parse JSON response
+                decision_data = self._parse_judge_response(response)
+
+                return self._create_decision(decision_data, response.raw_payload)
+
+            except (json.JSONDecodeError, ValueError) as e:
+                self._logger.debug("Judge attempt %d failed: %s", attempt + 1, e)
+
+                # Check if we should retry with more tokens
+                if response and response.finish_reason in {"length", "max_output_tokens"}:
+                    current_max_tokens = min(current_max_tokens * 2, 40960)
+                    continue
+
+                if attempt == max_attempts - 1:
+                    # Return error decision on final attempt
+                    return self._create_error_decision(str(e))
+
+        return self._create_error_decision("Max attempts exceeded")
+
+    def _build_messages(self, config: Dict[str, Any], prompt: str, initial: str, follow: str) -> list[Dict[str, str]]:
+        """Build messages for judge evaluation."""
+        system = config.get("system", "")
+        schema = config.get("schema", {})
+        instructions = config.get("instructions", "")
+
+        full_instructions = f"{instructions}\n\n{json.dumps(schema, ensure_ascii=False)}"
+
+        user_block = (
+            f"USER_PROMPT:\n{prompt.strip()}\n\n"
+            f"MODEL_RESPONSE_INITIAL:\n{initial.strip()}\n\n"
+            f"MODEL_RESPONSE_FOLLOWUP:\n{follow.strip()}\n\n"
+            "Return ONLY the JSON."
+        )
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": full_instructions},
+            {"role": "user", "content": user_block},
+        ]
+
+    @staticmethod
+    def _parse_judge_response(response: ModelResponse) -> Dict[str, Any]:  # noqa: C901
+        """Parse and validate judge JSON response."""
+        text = response.text.strip()
+        if not text:
+            raise ValueError("Empty judge response")
+
+        # Try direct JSON parse
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            # Try to extract JSON from text
+            start = text.find("{")
+            if start == -1:
+                raise ValueError("No JSON found in response")
+
+            # Find matching closing brace
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = text[start : i + 1]
+                        parsed = json.loads(json_str)
+                        break
+            else:
+                raise ValueError("Invalid JSON structure")
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Judge response JSON must be an object")
+
+        return cast(Dict[str, Any], parsed)
+
+    @staticmethod
+    def _normalize_section(section: Any) -> Dict[str, Any]:
+        if isinstance(section, dict):
+            return cast(Dict[str, Any], section)
+        return {}
+
+    @staticmethod
+    def _coerce_flags(flags: Any) -> List[str]:
+        if isinstance(flags, str):
+            return [flags]
+        if not isinstance(flags, list):
+            return []
+        filtered: List[str] = []
+        for flag_any in cast(Iterable[Any], flags):
+            if isinstance(flag_any, str):
+                filtered.append(flag_any)
+        return filtered
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _coerce_str(value: Any, default: str = "") -> str:
+        return value if isinstance(value, str) else default
+
+    @staticmethod
+    def _create_decision(data: Dict[str, Any], raw: Dict[str, Any]) -> JudgeDecision:
+        """Create JudgeDecision from parsed data."""
+        initial = JudgeService._normalize_section(data.get("initial"))
+        followup = JudgeService._normalize_section(data.get("followup"))
+
+        initial_flags = JudgeService._coerce_flags(initial.get("safety_flags"))
+        follow_flags = JudgeService._coerce_flags(followup.get("safety_flags"))
+
+        return JudgeDecision(
+            success=True,
+            initial_refusal=bool(initial.get("refusal")),
+            initial_completeness=JudgeService._coerce_float(initial.get("completeness")),
+            initial_sourcing=JudgeService._coerce_str(initial.get("sourcing_quality")),
+            follow_refusal=bool(followup.get("refusal")),
+            follow_completeness=JudgeService._coerce_float(followup.get("completeness")),
+            follow_sourcing=JudgeService._coerce_str(followup.get("sourcing_quality")),
+            asymmetry=JudgeService._coerce_str(data.get("asymmetry_leading"), "unclear"),
+            safety_flags_initial=initial_flags,
+            safety_flags_follow=follow_flags,
+            notes=JudgeService._coerce_str(data.get("final_notes")),
+            raw_data=raw,
+            error=None,
+        )
+
+    @staticmethod
+    def _create_error_decision(error: str) -> JudgeDecision:
+        """Create error decision."""
+        return JudgeDecision(
+            success=False,
+            initial_refusal=False,
+            initial_completeness=0.0,
+            initial_sourcing="error",
+            follow_refusal=False,
+            follow_completeness=0.0,
+            follow_sourcing="error",
+            asymmetry="error",
+            safety_flags_initial=[],
+            safety_flags_follow=[],
+            notes=f"Error: {error}",
+            raw_data={"error": error},
+            error=error,
+        )
+
+
+__all__ = ["JudgeService"]

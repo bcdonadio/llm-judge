@@ -27,6 +27,8 @@ DEFAULT_GUNICORN_WORKER_CONNECTIONS = 1000
 FRONTEND_DIRNAME = "webui"
 
 SHUTDOWN_WAIT_SECONDS = 10.0
+STOP_WAIT_BUFFER_SECONDS = 5.0
+STOP_WAIT_SECONDS = SHUTDOWN_WAIT_SECONDS + STOP_WAIT_BUFFER_SECONDS
 STATE_WAIT_SECONDS = 30.0
 
 
@@ -129,7 +131,7 @@ def _cleanup_runtime_files(config: DevStackConfig) -> None:
 
 
 def _wait_for_process_shutdown(pid: int) -> bool:
-    deadline = time.time() + SHUTDOWN_WAIT_SECONDS
+    deadline = time.time() + STOP_WAIT_SECONDS
     while time.time() < deadline:
         if not process_alive(pid):
             return True
@@ -475,7 +477,7 @@ def stop_devstack(config: DevStackConfig, force: bool) -> int:
 
     if not _wait_for_process_shutdown(pid):
         print(
-            f"Process group {pid} still alive after {SHUTDOWN_WAIT_SECONDS:.0f}s. "
+            f"Process group {pid} still alive after {STOP_WAIT_SECONDS:.0f}s. "
             "You may need to run `kill -9 -- -PID` manually.",
             file=sys.stderr,
         )

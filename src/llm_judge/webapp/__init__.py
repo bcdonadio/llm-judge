@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Type, cast
 
 from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
 from .job_manager import JobManager
-from ..utils import create_temp_outdir
+from ..runner import RunnerConfig, RunnerControl, RunnerEvent, LLMJudgeRunner
+from ..infrastructure.utility_services import FileSystemService
+
+if TYPE_CHECKING:
+    from ..container import ServiceContainer as ServiceContainerType
+    from ..factories import RunnerFactory as RunnerFactoryType
+else:
+    ServiceContainerType = Any  # type: ignore[assignment]
+    RunnerFactoryType = Any  # type: ignore[assignment]
+
+try:
+    from ..factories import RunnerFactory as _RuntimeRunnerFactory
+except ImportError:
+    has_di_support = False
+    _runner_factory: Optional[Type[Any]] = None
+else:
+    has_di_support = True
+    _runner_factory = _RuntimeRunnerFactory
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 frontend_bp = Blueprint("frontend", __name__)
@@ -195,8 +212,20 @@ def serve_frontend(path: str) -> Response:
     return send_from_directory(dist_dir, "index.html")
 
 
-def create_app(config: Dict[str, Any] | None = None) -> Flask:
-    """Factory for the Flask web application."""
+def create_app(
+    config: Dict[str, Any] | None = None,
+    container: Optional[ServiceContainerType] = None,
+) -> Flask:
+    """Factory for the Flask web application.
+
+    Args:
+        config: Optional Flask configuration dictionary
+        container: Optional ServiceContainer for dependency injection.
+                   When provided, the app uses DI-based runner factory.
+
+    Returns:
+        Configured Flask application instance
+    """
     app = Flask(__name__)
 
     project_root = Path(__file__).resolve().parents[3]
@@ -211,12 +240,45 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
 
     outdir_value = app_config.get("RUNS_OUTDIR")
     if outdir_value is None:
-        outdir_path = create_temp_outdir()
+        outdir_path = FileSystemService().create_temp_dir()
         app_config["RUNS_OUTDIR"] = str(outdir_path)
     else:
         outdir_path = Path(outdir_value)
 
-    manager = JobManager(outdir=outdir_path)
+    # Create runner factory with or without DI
+    runner_factory_fn: Optional[
+        Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerControl], LLMJudgeRunner]
+    ] = None
+
+    if container is not None and has_di_support:
+        if _runner_factory is None:
+            raise RuntimeError("Dependency injection support is not available.")
+        typed_container = container
+        factory: RunnerFactoryType = _runner_factory(typed_container)
+
+        def di_runner_factory(
+            config: RunnerConfig,
+            progress_callback: Callable[[RunnerEvent], None],
+            control: RunnerControl,
+        ) -> LLMJudgeRunner:
+            return factory.create_runner(
+                config=config,
+                control=control,
+                progress_callback=progress_callback,
+            )
+
+        runner_factory_fn = di_runner_factory
+
+        # Store container in app extensions for potential access
+        app.extensions = getattr(app, "extensions", {})
+        app.extensions["service_container"] = container
+
+    # Create JobManager with or without custom factory
+    if runner_factory_fn is not None:
+        manager = JobManager(outdir=outdir_path, runner_factory=runner_factory_fn)
+    else:
+        manager = JobManager(outdir=outdir_path)  # Uses default factory
+
     app.config["JOB_MANAGER"] = manager
     outdir_str = str(manager.outdir)
     print(f"[Artifacts] Using output directory: {outdir_str}")
@@ -227,4 +289,10 @@ def create_app(config: Dict[str, Any] | None = None) -> Flask:
     return app
 
 
+# DEPRECATED: Global app instance for backward compatibility only.
+# For production use, call create_app() directly.
+# This will be removed in a future version.
 app = create_app()
+
+
+__all__ = ["create_app", "app"]

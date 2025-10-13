@@ -1,4 +1,4 @@
-.PHONY: check fmt format-python format-webui format-check format-check-python format-check-webui lint lint-python lint-webui lint-webui-report typing typing-mypy typing-pyright typing-webui type unit-tests unit-tests-python unit-tests-webui test test-webui install gitleaks-hook format-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status
+.PHONY: check fmt format-python format-webui format-check format-check-python format-check-webui lint lint-python lint-webui lint-webui-report typing typing-mypy typing-pyright typing-webui type unit-tests unit-tests-python unit-tests-webui test test-webui install gitleaks-hook format-check-hook hooks web web-build webd webdev devstack-start devstack-stop devstack-status deadcode deadcode-python deadcode-webui
 
 UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
@@ -88,6 +88,14 @@ lint-webui:
 lint-webui-report:
 	cd webui && $(WEBUI_NPM) run lint:report
 
+deadcode: deadcode-python deadcode-webui
+
+deadcode-python:
+	$(UV_RUN) vulture
+
+deadcode-webui:
+	cd webui && $(WEBUI_NPM) exec knip
+
 typing: typing-mypy typing-pyright typing-webui
 
 typing-mypy:
@@ -113,7 +121,7 @@ test: typing unit-tests
 
 test-webui: lint-webui-report unit-tests-webui
 
-check: format-check lint typing unit-tests
+check: format-check lint typing unit-tests deadcode
 
 web-build:
 	cd webui && $(WEBUI_NPM) install

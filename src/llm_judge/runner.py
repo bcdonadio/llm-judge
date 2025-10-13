@@ -8,14 +8,21 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Sequence, cast
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, cast, overload
 
 from colorama import Fore, Style
 
-from .api import openrouter_chat
-from .judging import judge_decide
-from .prompts import CORE_PROMPTS, FOLLOW_UP
-from .utils import detect_refusal, extract_text, now_iso, safe_write_json
+from .domain import JudgeDecision, Prompt, RunConfiguration
+from .infrastructure.utility_services import FileSystemService, RefusalDetector, ResponseParser, TimeService
+from .services import (
+    IAPIClient,
+    IFileSystemService,
+    IJudgeService,
+    IPromptsManager,
+    IRefusalDetector,
+    IResponseParser,
+    ITimeService,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +50,17 @@ CSV_FIELDNAMES = [
     "raw_followup_path",
     "raw_judge_path",
 ]
+
+
+class CsvWriter(Protocol):
+    def writeheader(self) -> Any:
+        """Write the CSV header."""
+        raise NotImplementedError
+
+    def writerow(self, rowdict: Mapping[str, Any]) -> Any:
+        """Write a single row to the CSV output."""
+        _ = rowdict
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -92,26 +110,38 @@ class RunnerControl:
 
 
 class LLMJudgeRunner:
-    """Object-oriented orchestration of the LLM judge workflow."""
+    """Object-oriented orchestration of the LLM judge workflow with dependency injection."""
 
     def __init__(
         self,
         config: RunnerConfig,
         *,
-        prompt_loader: Callable[[], Iterable[str]] | None = None,
-        chat_client: Callable[..., Dict[str, Any]] | None = None,
-        judge_client: Callable[..., Dict[str, Any]] | None = None,
-        now_provider: Callable[[], str] | None = None,
+        api_client: Optional[IAPIClient] = None,
+        judge_service: Optional[IJudgeService] = None,
+        prompts_manager: Optional[IPromptsManager] = None,
+        time_service: Optional[ITimeService] = None,
+        refusal_detector: Optional[IRefusalDetector] = None,
+        response_parser: Optional[IResponseParser] = None,
+        file_system: Optional[IFileSystemService] = None,
         sleep_func: Callable[[float], None] | None = None,
         logger: logging.Logger | None = None,
         progress_callback: Callable[[RunnerEvent], None] | None = None,
         control: RunnerControl | None = None,
     ) -> None:
         self.config = config
-        self._prompt_loader = prompt_loader or self._default_prompt_loader
-        self._chat_client = chat_client or openrouter_chat
-        self._judge_client = judge_client or judge_decide
-        self._now = now_provider or now_iso
+
+        # New DI-based services (preferred)
+        self._api_client = api_client
+        self._judge_service = judge_service
+        self._prompts_manager = prompts_manager
+
+        # Utility dependencies
+        self._time_service = time_service or TimeService()
+        self._refusal_detector = refusal_detector or RefusalDetector()
+        self._response_parser = response_parser or ResponseParser()
+        self._fs_service = file_system or FileSystemService()
+
+        self._now = self._time_service.now_iso
         self._sleep = sleep_func or time.sleep
         self._logger = logger or LOGGER
         self._progress_callback = progress_callback
@@ -120,10 +150,29 @@ class LLMJudgeRunner:
     # --------------------------------------------------------------------- #
     # Configuration helpers
 
-    @staticmethod
-    def _default_prompt_loader() -> Iterable[str]:
-        """Yield the configured prompt collection."""
-        return CORE_PROMPTS
+    def _load_prompts(self) -> List[Prompt]:
+        """Load prompts using the new or legacy interface."""
+        if self._prompts_manager is not None:
+            # Use new DI service
+            return self._prompts_manager.get_core_prompts()
+
+        # Fall back to static YAML prompts
+        from .prompts import CORE_PROMPTS
+
+        prompt_texts = CORE_PROMPTS
+
+        # Convert to domain objects
+        return [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(prompt_texts)]
+
+    def _get_follow_up_prompt(self) -> str:
+        """Get the follow-up prompt text."""
+        if self._prompts_manager is not None:
+            return self._prompts_manager.get_follow_up()
+
+        # Legacy fallback
+        from .prompts import FOLLOW_UP
+
+        return FOLLOW_UP
 
     # --------------------------------------------------------------------- #
     # Logging helpers
@@ -166,34 +215,53 @@ class LLMJudgeRunner:
 
     def _verbose_log_judge(
         self,
-        judge_result: Dict[str, Any],
-        initial_decision: Dict[str, Any],
-        follow_decision: Dict[str, Any],
-        asymmetry: str,
-        final_notes: str,
+        judge_decision: JudgeDecision | None = None,
+        *,
+        judge_result: Optional[Dict[str, Any]] = None,
+        initial_decision: Optional[Dict[str, Any]] = None,
+        follow_decision: Optional[Dict[str, Any]] = None,
+        asymmetry: Optional[str] = None,
+        final_notes: Optional[str] = None,
     ) -> None:
         if not self.config.verbose:
             return
-        if judge_result.get("ok"):
+
+        decision = judge_decision
+        if decision is None:
+            if judge_result is None:
+                return
+            legacy_payload: Dict[str, Any] = {
+                "ok": judge_result.get("ok"),
+                "error": judge_result.get("error"),
+                "decision": {
+                    "initial": initial_decision or {},
+                    "followup": follow_decision or {},
+                    "asymmetry_leading": asymmetry,
+                    "final_notes": final_notes,
+                },
+            }
+            decision = self._convert_legacy_judge_result(legacy_payload)
+
+        if decision.success:
             details = (
                 "  Judge ▶ init(refusal={r0}, comp={c0}, source={s0}) "
                 "follow(refusal={r1}, comp={c1}, source={s1}) asym={asym}"
             ).format(
-                r0=initial_decision.get("refusal"),
-                c0=initial_decision.get("completeness"),
-                s0=initial_decision.get("sourcing_quality"),
-                r1=follow_decision.get("refusal"),
-                c1=follow_decision.get("completeness"),
-                s1=follow_decision.get("sourcing_quality"),
-                asym=asymmetry,
+                r0=decision.initial_refusal,
+                c0=decision.initial_completeness,
+                s0=decision.initial_sourcing,
+                r1=decision.follow_refusal,
+                c1=decision.follow_completeness,
+                s1=decision.follow_sourcing,
+                asym=decision.asymmetry,
             )
             self._logger.info("%s", self._color(details, Fore.YELLOW))
-            if final_notes:
-                self._logger.info("%s", self._color(f"  Notes ▶ {self._snippet(final_notes)}", Fore.LIGHTYELLOW_EX))
+            if decision.notes:
+                self._logger.info("%s", self._color(f"  Notes ▶ {self._snippet(decision.notes)}", Fore.LIGHTYELLOW_EX))
         else:
             self._logger.info(
                 "%s",
-                self._color(f"  Judge ▶ error={judge_result.get('error')}", Fore.RED + Style.BRIGHT),
+                self._color(f"  Judge ▶ error={decision.error}", Fore.RED + Style.BRIGHT),
             )
 
     # --------------------------------------------------------------------- #
@@ -216,63 +284,225 @@ class LLMJudgeRunner:
     # --------------------------------------------------------------------- #
     # Core execution helpers
 
-    @staticmethod
-    def _ensure_dict(value: Any) -> Dict[str, Any]:
-        if isinstance(value, dict):
-            return cast(Dict[str, Any], value)
-        empty: Dict[str, Any] = {}
-        return empty
-
     def _fetch_completion(
         self,
         model: str,
         messages: List[Dict[str, str]],
         max_tokens: int,
         temperature: float,
-        metadata: Dict[str, str],
         step: str,
         prompt_index: int,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> tuple[str, Dict[str, Any]]:
+        """Fetch a completion using new or legacy API."""
+        request_metadata: Dict[str, str] = {
+            "referer": "https://openrouter.ai",
+            "title": "AsymmetrySuite",
+        }
+        if metadata:
+            request_metadata.update(metadata)
+
+        if self._api_client is not None:
+            # Use new DI service
+            try:
+                response = self._api_client.chat_completion(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    metadata=request_metadata,
+                )
+                return response.text, response.raw_payload
+            except Exception as exc:  # pragma: no cover
+                text = f"[ERROR] {exc}"
+                payload = {"error": str(exc)}
+                return text, payload
+
+        # Fallback to direct OpenRouter call
+        from .api import openrouter_chat
+
         try:
-            payload = self._chat_client(
+            payload = openrouter_chat(
                 model,
                 messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                metadata=metadata,
+                metadata=request_metadata,
                 step=step,
                 prompt_index=prompt_index,
                 use_color=self.config.use_color,
             )
-            text = extract_text(payload)
-        except Exception as exc:  # pragma: no cover - network failures
+            text = self._response_parser.extract_text(payload)
+        except Exception as exc:  # pragma: no cover
             text = f"[ERROR] {exc}"
             payload = {"error": str(exc)}
         return text, payload
+
+    def _evaluate_responses(
+        self,
+        prompt_text: str,
+        initial_text: str,
+        followup_text: str,
+        prompt_index: int,
+    ) -> JudgeDecision:
+        """Evaluate responses using new or legacy judge service."""
+        if self._judge_service is not None:
+            # Use new DI service - need to create ModelResponse objects
+            from .domain import ModelResponse
+
+            initial_response = ModelResponse(text=initial_text, raw_payload={})
+            follow_response = ModelResponse(text=followup_text, raw_payload={})
+
+            config = RunConfiguration(
+                models=list(self.config.models),
+                judge_model=self.config.judge_model,
+                outdir=self.config.outdir,
+                max_tokens=self.config.max_tokens,
+                judge_max_tokens=self.config.judge_max_tokens,
+                temperature=self.config.temperature,
+                judge_temperature=self.config.judge_temperature,
+                sleep_s=self.config.sleep_s,
+                limit=self.config.limit,
+                verbose=self.config.verbose,
+                use_color=self.config.use_color,
+            )
+
+            return self._judge_service.evaluate(
+                prompt=prompt_text,
+                initial_response=initial_response,
+                follow_response=follow_response,
+                config=config,
+            )
+
+        # Legacy fallback
+        from .judging import judge_decide
+
+        metadata = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
+        judge_result = judge_decide(
+            judge_model=self.config.judge_model,
+            prompt=prompt_text,
+            initial_resp=initial_text,
+            follow_resp=followup_text,
+            max_tokens=self.config.judge_max_tokens,
+            temperature=self.config.judge_temperature,
+            meta=metadata,
+            prompt_index=prompt_index,
+            use_color=self.config.use_color,
+        )
+
+        # Convert legacy format to new domain object
+        return self._convert_legacy_judge_result(judge_result)
+
+    @staticmethod
+    def _ensure_dict(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(cast(Dict[str, Any], value))
+        return {}
+
+    @staticmethod
+    def _normalize_result_section(section: Any) -> Dict[str, Any]:
+        if isinstance(section, dict):
+            return cast(Dict[str, Any], section)
+        return {}
+
+    @staticmethod
+    def _coerce_flag_list(flags: Any) -> List[str]:
+        if isinstance(flags, str):
+            return [flags]
+        if not isinstance(flags, list):
+            return []
+        filtered: List[str] = []
+        for flag_any in cast(Iterable[Any], flags):
+            if isinstance(flag_any, str):
+                filtered.append(flag_any)
+        return filtered
+
+    @staticmethod
+    def _coerce_float_value(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _coerce_str_value(value: Any, default: str = "") -> str:
+        return value if isinstance(value, str) else default
+
+    @staticmethod
+    def _convert_legacy_judge_result(judge_result: Dict[str, Any]) -> JudgeDecision:
+        """Convert legacy judge result to new domain object."""
+        decision_dict = LLMJudgeRunner._normalize_result_section(judge_result.get("decision"))
+        initial_decision = LLMJudgeRunner._normalize_result_section(decision_dict.get("initial"))
+        followup_decision = LLMJudgeRunner._normalize_result_section(decision_dict.get("followup"))
+
+        asymmetry = decision_dict.get("asymmetry_leading")
+        if not isinstance(asymmetry, str):
+            asymmetry = "unclear"
+
+        final_notes = decision_dict.get("final_notes")
+        if not isinstance(final_notes, str):
+            final_notes = ""
+
+        initial_flags = LLMJudgeRunner._coerce_flag_list(initial_decision.get("safety_flags"))
+        follow_flags = LLMJudgeRunner._coerce_flag_list(followup_decision.get("safety_flags"))
+
+        return JudgeDecision(
+            success=bool(judge_result.get("ok")),
+            initial_refusal=bool(initial_decision.get("refusal")),
+            initial_completeness=LLMJudgeRunner._coerce_float_value(initial_decision.get("completeness")),
+            initial_sourcing=LLMJudgeRunner._coerce_str_value(initial_decision.get("sourcing_quality")),
+            follow_refusal=bool(followup_decision.get("refusal")),
+            follow_completeness=LLMJudgeRunner._coerce_float_value(followup_decision.get("completeness")),
+            follow_sourcing=LLMJudgeRunner._coerce_str_value(followup_decision.get("sourcing_quality")),
+            asymmetry=asymmetry,
+            safety_flags_initial=initial_flags,
+            safety_flags_follow=follow_flags,
+            notes=final_notes,
+            raw_data=judge_result,
+            error=None if judge_result.get("ok") else judge_result.get("error", "unknown error"),
+        )
 
     @staticmethod
     def _record_summary(
         summary_data: Dict[str, List[Dict[str, Any]]],
         model: str,
-        judge_result: Dict[str, Any],
-        initial_decision: Dict[str, Any],
-        follow_decision: Dict[str, Any],
-        asymmetry: str,
+        judge_decision: JudgeDecision | Dict[str, Any],
+        initial_decision: Optional[Dict[str, Any]] = None,
+        follow_decision: Optional[Dict[str, Any]] = None,
+        asymmetry: Optional[str] = None,
     ) -> None:
         summary_data.setdefault(model, [])
-        summary_data[model].append(
-            {
-                "ok": bool(judge_result.get("ok")),
-                "initial_comp": initial_decision.get("completeness") if judge_result.get("ok") else None,
-                "follow_comp": follow_decision.get("completeness") if judge_result.get("ok") else None,
-                "initial_refusal": initial_decision.get("refusal"),
-                "follow_refusal": follow_decision.get("refusal"),
-                "initial_source": initial_decision.get("sourcing_quality"),
-                "follow_source": follow_decision.get("sourcing_quality"),
-                "asymmetry": asymmetry,
-                "error": None if judge_result.get("ok") else judge_result.get("error", "unknown error"),
+
+        if isinstance(judge_decision, JudgeDecision):
+            row = {
+                "ok": judge_decision.success,
+                "initial_comp": judge_decision.initial_completeness if judge_decision.success else None,
+                "follow_comp": judge_decision.follow_completeness if judge_decision.success else None,
+                "initial_refusal": judge_decision.initial_refusal,
+                "follow_refusal": judge_decision.follow_refusal,
+                "initial_source": judge_decision.initial_sourcing,
+                "follow_source": judge_decision.follow_sourcing,
+                "asymmetry": judge_decision.asymmetry,
+                "error": judge_decision.error,
             }
-        )
+        else:
+            ok = bool(judge_decision.get("ok")) if "ok" in judge_decision else False
+            error = judge_decision.get("error") if not ok else None
+            init = LLMJudgeRunner._ensure_dict(initial_decision)
+            follow = LLMJudgeRunner._ensure_dict(follow_decision)
+            row = {
+                "ok": ok,
+                "initial_comp": init.get("completeness") if ok else None,
+                "follow_comp": follow.get("completeness") if ok else None,
+                "initial_refusal": bool(init.get("refusal")),
+                "follow_refusal": bool(follow.get("refusal")),
+                "initial_source": str(init.get("sourcing_quality", "n/a")),
+                "follow_source": str(follow.get("sourcing_quality", "n/a")),
+                "asymmetry": asymmetry if asymmetry is not None else judge_decision.get("asymmetry", "n/a"),
+                "error": error,
+            }
+
+        summary_data[model].append(row)
 
     def _summary_stats(self, summary_data: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         stats: Dict[str, Dict[str, Any]] = {}
@@ -348,7 +578,17 @@ class LLMJudgeRunner:
                 lines.append(f"  Issues: {_format_counter(errors)}")
         return lines
 
-    def _limited_prompts(self, prompts: Sequence[str]) -> Sequence[str]:
+    @staticmethod
+    def _ensure_prompt_objects(prompts: Sequence[Prompt] | Sequence[str]) -> List[Prompt]:
+        normalized: List[Prompt] = []
+        for idx, candidate in enumerate(prompts):
+            if isinstance(candidate, Prompt):
+                normalized.append(candidate)
+            else:
+                normalized.append(Prompt(text=str(candidate), category="legacy", index=idx))
+        return normalized
+
+    def _limited_prompts(self, prompts: Sequence[Prompt] | Sequence[str]) -> Sequence[Prompt] | Sequence[str]:
         if self.config.limit is None:
             return prompts
         limited = prompts[: self.config.limit]
@@ -358,9 +598,9 @@ class LLMJudgeRunner:
 
     def _process_models(
         self,
-        prompts: Sequence[str],
+        prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
-        writer: csv.DictWriter[Any],
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         for model in self.config.models:
@@ -373,9 +613,9 @@ class LLMJudgeRunner:
     def _process_single_model(
         self,
         model: str,
-        prompts: Sequence[str],
+        prompts: Sequence[Prompt] | Sequence[str],
         runs_dir: Path,
-        writer: csv.DictWriter[Any],
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         model_dir = runs_dir / str(model).replace("/", "_")
@@ -383,43 +623,123 @@ class LLMJudgeRunner:
         self._logger.debug("Processing model '%s' (%d prompts)", model, len(prompts))
 
         prompt_sequence = self._limited_prompts(prompts)
-        self._emit("model_started", model=model, total_prompts=len(prompt_sequence))
+        prompt_objects = self._ensure_prompt_objects(prompt_sequence)
+        self._emit("model_started", model=model, total_prompts=len(prompt_objects))
 
-        for idx, prompt in enumerate(prompt_sequence):
-            if self._process_prompt(model, model_dir, idx, prompt, writer, summary_data):
+        for prompt in prompt_objects:
+            if self._process_prompt(model, model_dir, prompt, writer, summary_data):
                 return True
         return False
 
+    @overload
     def _process_prompt(
         self,
         model: str,
         model_dir: Path,
-        idx: int,
-        prompt: str,
-        writer: csv.DictWriter[Any],
+        prompt: Prompt,
+        writer: CsvWriter,
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        pass
+
+    @overload
+    def _process_prompt(
+        self,
+        model: str,
+        model_dir: Path,
+        prompt_index: int,
+        prompt_text: str,
+        writer: CsvWriter,
+        summary_data: Dict[str, List[Dict[str, Any]]],
+    ) -> bool:
+        pass
+
+    def _process_prompt(  # type: ignore[misc]
+        self,
+        model: str,
+        model_dir: Path,
+        prompt_or_index: Prompt | int,
+        *args: Any,
+    ) -> bool:
+        prompt_obj, writer, summary = self._normalize_prompt_inputs(prompt_or_index, args)
+        return self._process_prompt_impl(model, model_dir, prompt_obj, writer, summary)
+
+    def _normalize_prompt_inputs(
+        self,
+        prompt_or_index: Prompt | int,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if isinstance(prompt_or_index, Prompt):
+            return self._normalize_modern_prompt(prompt_or_index, args)
+        if not isinstance(prompt_or_index, int):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError("Unsupported prompt argument; expected Prompt or prompt index.")
+        return self._normalize_legacy_prompt(prompt_or_index, args)
+
+    def _normalize_modern_prompt(
+        self,
+        prompt_obj: Prompt,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if len(args) != 2:
+            raise TypeError("Modern call path requires writer and summary arguments.")
+        writer_candidate, summary_candidate = args
+        if not isinstance(writer_candidate, csv.DictWriter):
+            raise TypeError("Expected csv.DictWriter for writer.")
+        if not isinstance(summary_candidate, dict):
+            raise TypeError("Expected summary dictionary for modern call path.")
+        writer = cast(CsvWriter, writer_candidate)
+        summary = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
+        return prompt_obj, writer, summary
+
+    def _normalize_legacy_prompt(
+        self,
+        prompt_index: int,
+        args: Sequence[Any],
+    ) -> tuple[Prompt, CsvWriter, Dict[str, List[Dict[str, Any]]]]:
+        if len(args) != 3:
+            raise TypeError("Legacy call requires prompt text, writer, and summary data.")
+        prompt_text, writer_candidate, summary_candidate = args
+        if not isinstance(prompt_text, str):
+            raise TypeError("Legacy call requires prompt text as a string.")
+        if not isinstance(writer_candidate, csv.DictWriter):
+            raise TypeError("Legacy call requires a csv.DictWriter instance.")
+        if not isinstance(summary_candidate, dict):
+            raise TypeError("Legacy call requires summary dictionary.")
+        writer = cast(CsvWriter, writer_candidate)
+        summary = cast(Dict[str, List[Dict[str, Any]]], summary_candidate)
+        prompt_obj = Prompt(text=prompt_text, category="legacy", index=prompt_index)
+        return prompt_obj, writer, summary
+
+    def _process_prompt_impl(
+        self,
+        model: str,
+        model_dir: Path,
+        prompt: Prompt,
+        writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
         if self._should_stop():
             return True
 
-        metadata: Dict[str, str] = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
-        self._verbose_log_prompt(idx, prompt)
+        idx = prompt.index
+        prompt_text = prompt.text
+
+        self._verbose_log_prompt(idx, prompt_text)
         self._emit(
             "message",
             model=model,
             prompt_index=idx,
             step="prompt",
             role="user",
-            content=prompt,
+            content=prompt_text,
         )
 
-        messages_initial = [{"role": "user", "content": prompt}]
+        messages_initial = [{"role": "user", "content": prompt_text}]
         text_initial, completion_initial = self._fetch_completion(
             model,
             messages_initial,
             self.config.max_tokens,
             self.config.temperature,
-            metadata,
             "Initial",
             idx,
         )
@@ -433,10 +753,11 @@ class LLMJudgeRunner:
             content=text_initial,
         )
 
+        follow_up_text = self._get_follow_up_prompt()
         messages_followup = [
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": prompt_text},
             {"role": "assistant", "content": text_initial},
-            {"role": "user", "content": FOLLOW_UP},
+            {"role": "user", "content": follow_up_text},
         ]
         self._emit(
             "message",
@@ -444,7 +765,7 @@ class LLMJudgeRunner:
             prompt_index=idx,
             step="followup_prompt",
             role="user",
-            content=FOLLOW_UP,
+            content=follow_up_text,
         )
 
         if self._sleep_with_stop():
@@ -455,7 +776,6 @@ class LLMJudgeRunner:
             messages_followup,
             self.config.max_tokens,
             self.config.temperature,
-            metadata,
             "Follow-up",
             idx,
         )
@@ -471,48 +791,50 @@ class LLMJudgeRunner:
 
         initial_path = model_dir / f"{idx:02d}_initial.json"
         follow_path = model_dir / f"{idx:02d}_followup.json"
-        safe_write_json(initial_path, completion_initial)
-        safe_write_json(follow_path, completion_follow)
+        self._fs_service.write_json(initial_path, completion_initial)
+        self._fs_service.write_json(follow_path, completion_follow)
 
-        heur_refusal_initial = detect_refusal(text_initial)
-        heur_refusal_follow = detect_refusal(text_follow)
+        heur_refusal_initial = self._refusal_detector.is_refusal(text_initial)
+        heur_refusal_follow = self._refusal_detector.is_refusal(text_follow)
 
         if self._sleep_with_stop():
             return True
 
-        judge_result = self._judge_client(
-            judge_model=self.config.judge_model,
-            prompt=prompt,
-            initial_resp=text_initial,
-            follow_resp=text_follow,
-            max_tokens=self.config.judge_max_tokens,
-            temperature=self.config.judge_temperature,
-            meta=metadata,
-            prompt_index=idx,
-            use_color=self.config.use_color,
+        judge_decision = self._evaluate_responses(
+            prompt_text,
+            text_initial,
+            text_follow,
+            idx,
         )
 
         judge_path = model_dir / f"{idx:02d}_judge.json"
-        safe_write_json(judge_path, judge_result)
+        self._fs_service.write_json(judge_path, judge_decision.raw_data)
 
-        decision_dict = self._ensure_dict(judge_result.get("decision"))
-        initial_decision = self._ensure_dict(decision_dict.get("initial"))
-        follow_decision = self._ensure_dict(decision_dict.get("followup"))
-        asymmetry_value = decision_dict.get("asymmetry_leading")
-        asymmetry = asymmetry_value if isinstance(asymmetry_value, str) else "unclear"
-        notes_value = decision_dict.get("final_notes")
-        final_notes = notes_value if isinstance(notes_value, str) else ""
-
-        self._verbose_log_judge(judge_result, initial_decision, follow_decision, asymmetry, final_notes)
+        self._verbose_log_judge(judge_decision)
         self._emit(
             "judge",
             model=model,
             prompt_index=idx,
-            asymmetry=asymmetry,
-            notes=final_notes,
-            decision=decision_dict,
-            ok=bool(judge_result.get("ok")),
-            error=judge_result.get("error"),
+            asymmetry=judge_decision.asymmetry,
+            notes=judge_decision.notes,
+            decision={
+                "initial": {
+                    "refusal": judge_decision.initial_refusal,
+                    "completeness": judge_decision.initial_completeness,
+                    "sourcing_quality": judge_decision.initial_sourcing,
+                    "safety_flags": judge_decision.safety_flags_initial,
+                },
+                "followup": {
+                    "refusal": judge_decision.follow_refusal,
+                    "completeness": judge_decision.follow_completeness,
+                    "sourcing_quality": judge_decision.follow_sourcing,
+                    "safety_flags": judge_decision.safety_flags_follow,
+                },
+                "asymmetry_leading": judge_decision.asymmetry,
+                "final_notes": judge_decision.notes,
+            },
+            ok=judge_decision.success,
+            error=judge_decision.error,
         )
 
         writer.writerow(
@@ -520,37 +842,29 @@ class LLMJudgeRunner:
                 "timestamp_utc": self._now(),
                 "model": model,
                 "prompt_index": idx,
-                "prompt_text": prompt,
+                "prompt_text": prompt_text,
                 "response_initial": text_initial,
                 "response_followup": text_follow,
                 "heuristic_refused_initial": heur_refusal_initial,
                 "heuristic_refused_followup": heur_refusal_follow,
                 "judge_model": self.config.judge_model,
-                "judge_initial_refusal": initial_decision.get("refusal"),
-                "judge_initial_completeness": initial_decision.get("completeness"),
-                "judge_initial_sourcing": initial_decision.get("sourcing_quality"),
-                "judge_followup_refusal": follow_decision.get("refusal"),
-                "judge_followup_completeness": follow_decision.get("completeness"),
-                "judge_followup_sourcing": follow_decision.get("sourcing_quality"),
-                "judge_asymmetry_leading": asymmetry,
-                "judge_safety_flags_initial": (
-                    ",".join(initial_decision.get("safety_flags", []))
-                    if isinstance(initial_decision.get("safety_flags"), list)
-                    else initial_decision.get("safety_flags")
-                ),
-                "judge_safety_flags_followup": (
-                    ",".join(follow_decision.get("safety_flags", []))
-                    if isinstance(follow_decision.get("safety_flags"), list)
-                    else follow_decision.get("safety_flags")
-                ),
-                "judge_final_notes": final_notes,
+                "judge_initial_refusal": judge_decision.initial_refusal,
+                "judge_initial_completeness": judge_decision.initial_completeness,
+                "judge_initial_sourcing": judge_decision.initial_sourcing,
+                "judge_followup_refusal": judge_decision.follow_refusal,
+                "judge_followup_completeness": judge_decision.follow_completeness,
+                "judge_followup_sourcing": judge_decision.follow_sourcing,
+                "judge_asymmetry_leading": judge_decision.asymmetry,
+                "judge_safety_flags_initial": ",".join(judge_decision.safety_flags_initial),
+                "judge_safety_flags_followup": ",".join(judge_decision.safety_flags_follow),
+                "judge_final_notes": judge_decision.notes,
                 "raw_initial_path": str(initial_path),
                 "raw_followup_path": str(follow_path),
                 "raw_judge_path": str(judge_path),
             }
         )
 
-        self._record_summary(summary_data, model, judge_result, initial_decision, follow_decision, asymmetry)
+        self._record_summary(summary_data, model, judge_decision)
         snapshot = self._summary_stats(summary_data)
         self._emit("summary", summary=snapshot, model=model, prompt_index=idx)
 
@@ -591,7 +905,7 @@ class LLMJudgeRunner:
 
     def run(self) -> RunArtifacts:
         """Execute the configured suite across all models."""
-        prompts = list(self._prompt_loader())
+        prompts = self._load_prompts()
         timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
         runs_dir = self.config.outdir / "runs" / timestamp
@@ -617,7 +931,7 @@ class LLMJudgeRunner:
         cancelled = False
 
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
-            writer: csv.DictWriter[Any] = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
+            writer: CsvWriter = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             cancelled = self._process_models(prompts, runs_dir, writer, summary_data)
 
