@@ -19,6 +19,7 @@ dev = [
     "flake8>=7.3.0",
     "mypy>=1.18.2",
     "pyright>=1.1.406",
+    "vulture>=2.13",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
     "pytest-dotenv-modern>=0.1.1",
@@ -91,3 +92,9 @@ concurrency = ["thread"]
 skip_empty = true
 show_missing = true
 fail_under = 95
+
+[tool.vulture]
+paths = ["src", "judge.py"]
+exclude = ["src/llm_judge/webapp/static", "results"]
+ignore_decorators = ["@app.route", "@app.get", "@app.post", "@bp.route", "@bp.get", "@bp.post"]
+min_confidence = 80
