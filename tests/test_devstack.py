@@ -623,7 +623,7 @@ def test_stop_devstack_still_alive_timeout(
     base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     base_config.pid_file.write_text("808\n", encoding="utf-8")
-    time_values = iter([0.0, 0.0, devstack.SHUTDOWN_WAIT_SECONDS + 1])
+    time_values = iter([0.0, 0.0, devstack.STOP_WAIT_SECONDS + 1])
     monkeypatch.setattr(devstack, "process_alive", _always_true)
 
     def fake_time() -> float:
