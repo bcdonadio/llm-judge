@@ -10,7 +10,7 @@ from flask import Blueprint, Flask, Response, current_app, jsonify, request, sen
 
 from .job_manager import JobManager
 from ..runner import RunnerConfig, RunnerControl, RunnerEvent, LLMJudgeRunner
-from ..utils import create_temp_outdir
+from ..infrastructure.utility_services import FileSystemService
 
 # Optional import for DI support
 try:
@@ -235,7 +235,7 @@ def create_app(
 
     outdir_value = app_config.get("RUNS_OUTDIR")
     if outdir_value is None:
-        outdir_path = create_temp_outdir()
+        outdir_path = FileSystemService().create_temp_dir()
         app_config["RUNS_OUTDIR"] = str(outdir_path)
     else:
         outdir_path = Path(outdir_value)

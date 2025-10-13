@@ -5,37 +5,46 @@ import datetime as dt
 from pathlib import Path
 from typing import Any, Dict
 
-import llm_judge.utils as utils_module
-from llm_judge import detect_refusal, extract_text, safe_write_json, now_iso
+from llm_judge.infrastructure.utility_services import (
+    FileSystemService,
+    RefusalDetector,
+    ResponseParser,
+    TimeService,
+)
+
+_REFUSAL_DETECTOR = RefusalDetector()
+_RESPONSE_PARSER = ResponseParser()
+_FILE_SYSTEM = FileSystemService()
+_TIME_SERVICE = TimeService()
 
 
 def test_detect_refusal_true_for_common_policy_language() -> None:
     refusal_text = "I'm sorry, but I can't help with that request because it violates policy."
-    assert detect_refusal(refusal_text) is True
+    assert _REFUSAL_DETECTOR.is_refusal(refusal_text) is True
 
 
 def test_detect_refusal_false_for_compliant_response() -> None:
     helpful_text = "Here is the information you requested presented clearly and accurately."
-    assert detect_refusal(helpful_text) is False
+    assert _REFUSAL_DETECTOR.is_refusal(helpful_text) is False
 
 
 def test_detect_refusal_empty_text_is_refusal() -> None:
-    assert detect_refusal("") is True
+    assert _REFUSAL_DETECTOR.is_refusal("") is True
 
 
 def test_extract_text_returns_primary_message_contents() -> None:
     payload: Dict[str, Any] = {"choices": [{"message": {"content": "Hello world"}}]}
-    assert extract_text(payload) == "Hello world"
+    assert _RESPONSE_PARSER.extract_text(payload) == "Hello world"
 
 
 def test_extract_text_handles_missing_content_gracefully() -> None:
     payload: Dict[str, Any] = {"choices": [{"message": {}}]}
-    assert extract_text(payload) == ""
+    assert _RESPONSE_PARSER.extract_text(payload) == ""
 
 
 def test_extract_text_handles_missing_message() -> None:
     payload: Dict[str, Any] = {}
-    assert extract_text(payload) == ""
+    assert _RESPONSE_PARSER.extract_text(payload) == ""
 
 
 def test_extract_text_combines_segmented_content() -> None:
@@ -51,16 +60,16 @@ def test_extract_text_combines_segmented_content() -> None:
             }
         ]
     }
-    assert extract_text(payload) == "Hello world"
+    assert _RESPONSE_PARSER.extract_text(payload) == "Hello world"
 
 
 def test_collect_content_segments_handles_strings() -> None:
     segments = ["Hello ", {"text": "world"}, 3]
-    assert utils_module._collect_content_segments(segments) == "Hello world"
+    assert ResponseParser._collect_content_segments(segments) == "Hello world"
 
 
 def test_collect_content_segments_ignores_non_string_dicts() -> None:
-    assert utils_module._collect_content_segments([{"text": 5}]) == ""
+    assert ResponseParser._collect_content_segments([{"text": 5}]) == ""
 
 
 def test_extract_text_uses_reasoning_when_available() -> None:
@@ -74,7 +83,7 @@ def test_extract_text_uses_reasoning_when_available() -> None:
             }
         ]
     }
-    assert extract_text(payload) == "Consider multiple factors"
+    assert _RESPONSE_PARSER.extract_text(payload) == "Consider multiple factors"
 
 
 def test_extract_text_uses_tool_call_arguments_when_content_empty() -> None:
@@ -95,7 +104,7 @@ def test_extract_text_uses_tool_call_arguments_when_content_empty() -> None:
             }
         ]
     }
-    assert extract_text(payload) == '{"answer": 1}'
+    assert _RESPONSE_PARSER.extract_text(payload) == '{"answer": 1}'
 
 
 def test_extract_text_ignores_invalid_tool_calls() -> None:
@@ -108,14 +117,14 @@ def test_extract_text_ignores_invalid_tool_calls() -> None:
         ],
     }
     payload: Dict[str, Any] = {"choices": [{"message": message}]}
-    assert extract_text(payload) == '{"valid": true}'
+    assert _RESPONSE_PARSER.extract_text(payload) == '{"valid": true}'
 
 
-def test_safe_write_json_creates_parent_directories(tmp_path: Path) -> None:
+def test_write_json_creates_parent_directories(tmp_path: Path) -> None:
     target = tmp_path / "nested" / "artifact.json"
     sample = {"status": "ok", "count": 3}
 
-    safe_write_json(target, sample)
+    _FILE_SYSTEM.write_json(target, sample)
 
     assert target.exists()
     with target.open("r", encoding="utf-8") as fh:
@@ -124,7 +133,7 @@ def test_safe_write_json_creates_parent_directories(tmp_path: Path) -> None:
 
 
 def test_now_iso_returns_utc_timestamp_with_z_suffix() -> None:
-    timestamp = now_iso()
+    timestamp = _TIME_SERVICE.now_iso()
     assert timestamp.endswith("Z")
 
     parsed = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -133,14 +142,14 @@ def test_now_iso_returns_utc_timestamp_with_z_suffix() -> None:
 
 
 def test_internal_dict_utilities() -> None:
-    assert utils_module._is_dict_list([{"a": 1}]) is True
-    assert utils_module._is_dict_list("nope") is False
-    assert utils_module._all_dict_elements([{"a": 1}, "bad"]) is False
+    assert ResponseParser._is_dict_list([{"a": 1}]) is True
+    assert ResponseParser._is_dict_list("nope") is False
+    assert ResponseParser._all_dict_elements([{"a": 1}, "bad"]) is False
 
 
 def test_extract_message_and_content_failures() -> None:
-    assert utils_module._extract_message({}) is None
-    assert utils_module._extract_message({"choices": [{"message": "string"}]}) is None
-    assert utils_module._extract_content_text({}) == ""
-    assert utils_module._extract_tool_call_arguments({"tool_calls": "bad"}) == ""
-    assert utils_module._extract_tool_call_arguments({"tool_calls": [{"function": {}}]}) == ""
+    assert ResponseParser._extract_message({}) is None
+    assert ResponseParser._extract_message({"choices": [{"message": "string"}]}) is None
+    assert _RESPONSE_PARSER._extract_content_text({}) == ""
+    assert ResponseParser._extract_tool_call_arguments({"tool_calls": "bad"}) == ""
+    assert ResponseParser._extract_tool_call_arguments({"tool_calls": [{"function": {}}]}) == ""

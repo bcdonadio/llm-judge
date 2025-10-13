@@ -211,7 +211,11 @@ def test_process_prompt_cancels_after_summary(tmp_path: Path) -> None:
     control = StopAfterSummary()
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-    cast(Any, runner)._judge_client = _fake_judge_decision
+
+    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
+        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
+
+    cast(Any, runner)._evaluate_responses = fake_evaluate
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -235,7 +239,11 @@ def test_process_prompt_cancels_after_followup(tmp_path: Path) -> None:
     control._calls = 1  # Will stop on next check (second sleep call)
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-    cast(Any, runner)._judge_client = _fake_judge_decision
+
+    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
+        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
+
+    cast(Any, runner)._evaluate_responses = fake_evaluate
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -273,7 +281,11 @@ def test_process_prompt_cancels_before_judge(tmp_path: Path) -> None:
     control = StopBeforeJudge()
     runner._control = cast(RunnerControl, control)
     cast(Any, runner)._fetch_completion = _fake_fetch_completion
-    cast(Any, runner)._judge_client = _fake_judge_decision
+
+    def fake_evaluate(*args: Any, **kwargs: Any) -> JudgeDecision:
+        return LLMJudgeRunner._convert_legacy_judge_result(_fake_judge_decision())
+
+    cast(Any, runner)._evaluate_responses = fake_evaluate
     cast(Any, runner)._now = _fake_now
     cast(Any, runner)._emit = _noop_emit
     cast(Any, runner)._verbose_log_prompt = _noop
@@ -389,13 +401,14 @@ def test_summaries_and_recording(tmp_path: Path) -> None:
     assert math.isclose(stats["model-b"]["avg_initial_completeness"], 1.0)
 
 
-def test_fetch_completion_success(tmp_path: Path) -> None:
+def test_fetch_completion_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {"choices": [{"message": {"content": "Helpful"}}]}
 
     def fake_chat(*_: Any, **__: Any) -> Dict[str, Any]:
         return payload
 
-    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False), chat_client=fake_chat)
+    monkeypatch.setattr("llm_judge.api.openrouter_chat", fake_chat)
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False))
     text, returned = runner._fetch_completion(
         model="model-x",
         messages=[{"role": "user", "content": "Hi"}],
@@ -409,11 +422,12 @@ def test_fetch_completion_success(tmp_path: Path) -> None:
     assert returned is payload
 
 
-def test_fetch_completion_handles_errors(tmp_path: Path) -> None:
+def test_fetch_completion_handles_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def raising_chat(*_: Any, **__: Any) -> Dict[str, Any]:
         raise RuntimeError("network down")
 
-    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False), chat_client=raising_chat)
+    monkeypatch.setattr("llm_judge.api.openrouter_chat", raising_chat)
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"], verbose=False))
     text, returned = runner._fetch_completion(
         model="model-x",
         messages=[],
@@ -427,12 +441,6 @@ def test_fetch_completion_handles_errors(tmp_path: Path) -> None:
     assert returned == {"error": "network down"}
 
 
-def test_default_prompt_loader_matches_configuration() -> None:
-    from llm_judge.prompts import CORE_PROMPTS
-
-    assert list(LLMJudgeRunner._default_prompt_loader()) == CORE_PROMPTS
-
-
 def test_ensure_dict_handles_non_dict(tmp_path: Path) -> None:
     runner = LLMJudgeRunner(build_config(tmp_path, models=[]))
     original = runner._ensure_dict({"a": 1})
@@ -444,9 +452,6 @@ def test_run_creates_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     prompts = ["Prompt one", "Prompt two"]
-
-    def fake_prompts() -> List[str]:
-        return prompts
 
     def fake_chat(model: str, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         step = kwargs["step"]
@@ -487,14 +492,16 @@ def test_run_creates_outputs(
         verbose=True,
         use_color=True,
     )
-    runner = LLMJudgeRunner(
-        cfg,
-        prompt_loader=fake_prompts,
-        chat_client=fake_chat,
-        judge_client=fake_judge_decide,
-        now_provider=fake_now_iso,
-        sleep_func=fake_sleep,
+    runner = LLMJudgeRunner(cfg, sleep_func=fake_sleep)
+    monkeypatch.setattr("llm_judge.api.openrouter_chat", fake_chat)
+    monkeypatch.setattr("llm_judge.judging.judge_decide", fake_judge_decide)
+    monkeypatch.setattr(
+        runner,
+        "_load_prompts",
+        lambda: [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(prompts)],
     )
+    monkeypatch.setattr(runner, "_get_follow_up_prompt", lambda: "Follow-up prompt")
+    runner._now = fake_now_iso
 
     artifacts = runner.run()
     captured = capsys.readouterr()
@@ -530,10 +537,11 @@ def test_run_handles_no_models(
     def fake_sleep(_: float) -> None:
         return None
 
-    runner = LLMJudgeRunner(
-        build_config(tmp_path, models=[], verbose=False),
-        prompt_loader=fake_prompts,
-        sleep_func=fake_sleep,
+    runner = LLMJudgeRunner(build_config(tmp_path, models=[], verbose=False), sleep_func=fake_sleep)
+    monkeypatch.setattr(
+        runner,
+        "_load_prompts",
+        lambda: [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(fake_prompts())],
     )
     runner.run()
     captured = capsys.readouterr()
@@ -563,13 +571,15 @@ def test_run_without_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     def fake_sleep(_: float) -> None:
         return None
 
-    runner = LLMJudgeRunner(
-        build_config(tmp_path, models=["model"]),
-        prompt_loader=fake_prompts,
-        chat_client=fake_chat,
-        judge_client=fake_judge,
-        sleep_func=fake_sleep,
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["model"]), sleep_func=fake_sleep)
+    monkeypatch.setattr("llm_judge.api.openrouter_chat", fake_chat)
+    monkeypatch.setattr("llm_judge.judging.judge_decide", fake_judge)
+    monkeypatch.setattr(
+        runner,
+        "_load_prompts",
+        lambda: [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(fake_prompts())],
     )
+    monkeypatch.setattr(runner, "_get_follow_up_prompt", lambda: "Follow")
     runner.run()
 
     csv_files = list(tmp_path.glob("results_*.csv"))

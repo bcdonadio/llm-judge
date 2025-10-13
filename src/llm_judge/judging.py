@@ -11,9 +11,10 @@ from typing import Any, Dict, cast
 import yaml
 
 from .api import openrouter_chat
-from .utils import extract_text
+from .infrastructure.utility_services import ResponseParser
 
 LOGGER = logging.getLogger(__name__)
+_RESPONSE_PARSER = ResponseParser()
 
 
 @lru_cache(maxsize=1)
@@ -147,7 +148,7 @@ def judge_decide(
             prompt_index=prompt_index if prompt_index is not None else attempts - 1,
             use_color=use_color,
         )
-        raw_content = extract_text(data)
+        raw_content = _RESPONSE_PARSER.extract_text(data)
         choices_obj = data.get("choices")
         choice_dict = _ensure_dict(choices_obj[0]) if isinstance(choices_obj, list) and choices_obj else {}
         finish_value = choice_dict.get("finish_reason") or choice_dict.get("native_finish_reason")

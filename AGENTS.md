@@ -42,7 +42,7 @@ The `llm-judge` project evaluates how language models respond to a politically s
 
 - `llm_judge.api.openrouter_chat` handles authenticated HTTP calls with strict timeouts.
 - `llm_judge.prompts` loads prompt definitions from YAML to keep text out of code.
-- `llm_judge.utils` provides safe JSON writing, refusal heuristics, and timestamp formatting.
+- `llm_judge.infrastructure.utility_services` provides safe JSON writing, refusal heuristics, and timestamp formatting.
 
 ## Safety & Compliance
 

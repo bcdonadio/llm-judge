@@ -12,7 +12,7 @@ from threading import Event, RLock, Thread
 from typing import Any, Callable, Dict, Iterator, List, Protocol
 
 from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
-from llm_judge.utils import create_temp_outdir
+from llm_judge.infrastructure.utility_services import FileSystemService
 
 from .sse import SSEBroker, time_now_ms
 
@@ -67,7 +67,8 @@ class JobManager:
         history_limit: int = 500,
     ) -> None:
         self._lock = RLock()
-        self._outdir = outdir or create_temp_outdir()
+        fs_service = FileSystemService()
+        self._outdir = outdir or fs_service.create_temp_dir()
         self._outdir.mkdir(parents=True, exist_ok=True)
         self._runner_factory = runner_factory or self._default_runner_factory
         self._history_limit = history_limit

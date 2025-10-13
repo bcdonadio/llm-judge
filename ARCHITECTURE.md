@@ -461,7 +461,9 @@ response = openrouter_chat(
     temperature=0.7,
     metadata={"title": "Test"},
 )
-text = extract_text(response)
+from llm_judge.infrastructure.utility_services import ResponseParser
+
+text = ResponseParser().extract_text(response)
 ```
 
 **After:**

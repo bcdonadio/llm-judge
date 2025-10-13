@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from llm_judge import LLMJudgeRunner, RunnerConfig
-from llm_judge.utils import create_temp_outdir
+from llm_judge.infrastructure.utility_services import FileSystemService
 from colorama import Fore, Style, init as colorama_init
 
 
@@ -133,7 +133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     use_color = configure_logging(args.debug, args.verbose)
 
-    outdir = Path(args.outdir) if args.outdir else create_temp_outdir()
+    fs_service = FileSystemService()
+    outdir = Path(args.outdir) if args.outdir else fs_service.create_temp_dir()
     outdir.mkdir(parents=True, exist_ok=True)
     print(f"[Artifacts] Using output directory: {outdir}")
 

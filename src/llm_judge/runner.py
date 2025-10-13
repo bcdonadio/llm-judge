@@ -12,12 +12,17 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, cast
 
 from colorama import Fore, Style
 
-# New imports for refactored architecture
 from .domain import JudgeDecision, Prompt, RunConfiguration
-from .services import IAPIClient, IJudgeService, IPromptsManager
-
-# Legacy imports for backward compatibility
-from .utils import detect_refusal, extract_text, now_iso, safe_write_json
+from .infrastructure.utility_services import FileSystemService, RefusalDetector, ResponseParser, TimeService
+from .services import (
+    IAPIClient,
+    IFileSystemService,
+    IJudgeService,
+    IPromptsManager,
+    IRefusalDetector,
+    IResponseParser,
+    ITimeService,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -103,11 +108,10 @@ class LLMJudgeRunner:
         api_client: Optional[IAPIClient] = None,
         judge_service: Optional[IJudgeService] = None,
         prompts_manager: Optional[IPromptsManager] = None,
-        # Legacy compatibility parameters
-        prompt_loader: Callable[[], Iterable[str]] | None = None,
-        chat_client: Callable[..., Dict[str, Any]] | None = None,
-        judge_client: Callable[..., Dict[str, Any]] | None = None,
-        now_provider: Callable[[], str] | None = None,
+        time_service: Optional[ITimeService] = None,
+        refusal_detector: Optional[IRefusalDetector] = None,
+        response_parser: Optional[IResponseParser] = None,
+        file_system: Optional[IFileSystemService] = None,
         sleep_func: Callable[[float], None] | None = None,
         logger: logging.Logger | None = None,
         progress_callback: Callable[[RunnerEvent], None] | None = None,
@@ -120,13 +124,13 @@ class LLMJudgeRunner:
         self._judge_service = judge_service
         self._prompts_manager = prompts_manager
 
-        # Legacy compatibility (deprecated)
-        self._prompt_loader = prompt_loader
-        self._chat_client = chat_client
-        self._judge_client = judge_client
-
         # Utility dependencies
-        self._now = now_provider or now_iso
+        self._time_service = time_service or TimeService()
+        self._refusal_detector = refusal_detector or RefusalDetector()
+        self._response_parser = response_parser or ResponseParser()
+        self._fs_service = file_system or FileSystemService()
+
+        self._now = self._time_service.now_iso
         self._sleep = sleep_func or time.sleep
         self._logger = logger or LOGGER
         self._progress_callback = progress_callback
@@ -135,27 +139,16 @@ class LLMJudgeRunner:
     # --------------------------------------------------------------------- #
     # Configuration helpers
 
-    @staticmethod
-    def _default_prompt_loader() -> Iterable[str]:
-        """Yield the configured prompt collection."""
-        from .prompts import CORE_PROMPTS
-
-        return CORE_PROMPTS
-
     def _load_prompts(self) -> List[Prompt]:
         """Load prompts using the new or legacy interface."""
         if self._prompts_manager is not None:
             # Use new DI service
             return self._prompts_manager.get_core_prompts()
 
-        # Fall back to legacy loader
-        if self._prompt_loader is not None:
-            prompt_texts = list(self._prompt_loader())
-        else:
-            # Import lazily for backward compatibility
-            from .prompts import CORE_PROMPTS
+        # Fall back to static YAML prompts
+        from .prompts import CORE_PROMPTS
 
-            prompt_texts = CORE_PROMPTS
+        prompt_texts = CORE_PROMPTS
 
         # Convert to domain objects
         return [Prompt(text=text, category="core", index=idx) for idx, text in enumerate(prompt_texts)]
@@ -314,16 +307,11 @@ class LLMJudgeRunner:
                 payload = {"error": str(exc)}
                 return text, payload
 
-        # Legacy fallback
-        if self._chat_client is not None:
-            chat_func = self._chat_client
-        else:
-            from .api import openrouter_chat
-
-            chat_func = openrouter_chat
+        # Fallback to direct OpenRouter call
+        from .api import openrouter_chat
 
         try:
-            payload = chat_func(
+            payload = openrouter_chat(
                 model,
                 messages,
                 max_tokens=max_tokens,
@@ -333,7 +321,7 @@ class LLMJudgeRunner:
                 prompt_index=prompt_index,
                 use_color=self.config.use_color,
             )
-            text = extract_text(payload)
+            text = self._response_parser.extract_text(payload)
         except Exception as exc:  # pragma: no cover
             text = f"[ERROR] {exc}"
             payload = {"error": str(exc)}
@@ -376,15 +364,10 @@ class LLMJudgeRunner:
             )
 
         # Legacy fallback
-        if self._judge_client is not None:
-            judge_func = self._judge_client
-        else:
-            from .judging import judge_decide
-
-            judge_func = judge_decide
+        from .judging import judge_decide
 
         metadata = {"referer": "https://openrouter.ai", "title": "AsymmetrySuite"}
-        judge_result = judge_func(
+        judge_result = judge_decide(
             judge_model=self.config.judge_model,
             prompt=prompt_text,
             initial_resp=initial_text,
@@ -737,11 +720,11 @@ class LLMJudgeRunner:
 
         initial_path = model_dir / f"{idx:02d}_initial.json"
         follow_path = model_dir / f"{idx:02d}_followup.json"
-        safe_write_json(initial_path, completion_initial)
-        safe_write_json(follow_path, completion_follow)
+        self._fs_service.write_json(initial_path, completion_initial)
+        self._fs_service.write_json(follow_path, completion_follow)
 
-        heur_refusal_initial = detect_refusal(text_initial)
-        heur_refusal_follow = detect_refusal(text_follow)
+        heur_refusal_initial = self._refusal_detector.is_refusal(text_initial)
+        heur_refusal_follow = self._refusal_detector.is_refusal(text_follow)
 
         if self._sleep_with_stop():
             return True
@@ -754,7 +737,7 @@ class LLMJudgeRunner:
         )
 
         judge_path = model_dir / f"{idx:02d}_judge.json"
-        safe_write_json(judge_path, judge_decision.raw_data)
+        self._fs_service.write_json(judge_path, judge_decision.raw_data)
 
         self._verbose_log_judge(judge_decision)
         self._emit(

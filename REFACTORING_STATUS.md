@@ -284,15 +284,16 @@ Update Flask application to:
 - SSEBroker is already well-designed
 - Need to wire up container
 
-### 10. Utils Module Refactoring
+### 10. Utility Services
 
 **Priority:** Low
 
-Current `utils.py` contains standalone functions. Consider:
+Utility helpers now live in `infrastructure.utility_services`:
 
-- Keep simple utilities as pure functions (now_iso, detect_refusal)
-- Create service classes for complex utilities if needed
-- These utilities are largely stateless and work well as-is
+- `TimeService` for timestamp generation
+- `RefusalDetector` for heuristic refusal checks
+- `ResponseParser` for payload parsing
+- `FileSystemService` for JSON persistence
 
 ### 11. Unit of Work Pattern
 
@@ -490,7 +491,6 @@ for t in threads:
 - `src/llm_judge/api.py` - Still works for legacy code
 - `src/llm_judge/prompts.py` - Still works for legacy code
 - `src/llm_judge/judging.py` - Still works for legacy code
-- `src/llm_judge/utils.py` - Stateless utilities, no changes needed yet
 - `src/llm_judge/webapp/*` - To be refactored next
 
 ## Next Steps
