@@ -119,8 +119,8 @@ def test_chat_completion_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_extract_text_fallbacks(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload_reason = {"choices": [{"message": {"content": [], "reasoning": "Use reasoning"}}]}
-    payload_tool = {
+    payload_reason: Dict[str, Any] = {"choices": [{"message": {"content": [], "reasoning": "Use reasoning"}}]}
+    payload_tool: Dict[str, Any] = {
         "choices": [
             {
                 "message": {

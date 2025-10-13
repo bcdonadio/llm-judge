@@ -157,7 +157,8 @@ class OpenRouterClient(IAPIClient):
                 texts: List[str] = []
                 for item in segments:
                     if isinstance(item, dict):
-                        text_value = item.get("text")
+                        item_dict: Dict[str, Any] = item
+                        text_value = item_dict.get("text")
                         if isinstance(text_value, str):
                             texts.append(text_value)
                         continue
@@ -178,7 +179,8 @@ class OpenRouterClient(IAPIClient):
                     function = call.get("function")
                     if not isinstance(function, dict):
                         continue
-                    arguments = function.get("arguments")
+                    function_any = cast(Any, function)
+                    arguments = function_any.get("arguments")
                     if isinstance(arguments, str) and arguments.strip():
                         return arguments
 

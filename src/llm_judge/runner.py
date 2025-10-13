@@ -417,7 +417,11 @@ class LLMJudgeRunner:
             return [flags]
         if not isinstance(flags, list):
             return []
-        return [flag for flag in flags if isinstance(flag, str)]
+        filtered: List[str] = []
+        for flag_any in cast(Iterable[Any], flags):
+            if isinstance(flag_any, str):
+                filtered.append(flag_any)
+        return filtered
 
     @staticmethod
     def _coerce_float_value(value: Any) -> float:

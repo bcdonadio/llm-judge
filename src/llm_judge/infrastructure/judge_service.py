@@ -3,7 +3,7 @@
 import json
 import threading
 import logging
-from typing import Dict, Any, Optional, List, cast
+from typing import Any, Dict, Iterable, List, Optional, cast
 from pathlib import Path
 from importlib import resources
 
@@ -158,7 +158,11 @@ class JudgeService(IJudgeService):
             return [flags]
         if not isinstance(flags, list):
             return []
-        return [flag_item for flag_item in flags if isinstance(flag_item, str)]
+        filtered: List[str] = []
+        for flag_any in cast(Iterable[Any], flags):
+            if isinstance(flag_any, str):
+                filtered.append(flag_any)
+        return filtered
 
     @staticmethod
     def _coerce_float(value: Any) -> float:

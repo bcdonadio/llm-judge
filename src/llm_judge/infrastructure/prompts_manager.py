@@ -1,7 +1,7 @@
 """Thread-safe prompts management implementation."""
 
 import threading
-from typing import List, Dict, Any, Optional, cast
+from typing import Any, Dict, Iterable, List, Optional, cast
 from pathlib import Path
 from importlib import resources
 
@@ -44,14 +44,17 @@ class PromptsManager(IPromptsManager):
     def get_core_prompts(self) -> List[Prompt]:
         """Get core prompts as domain objects."""
         data = self._load_prompts()
-        prompts_list_raw = data.get("core_prompts", [])
-        if not isinstance(prompts_list_raw, list):
+        raw_prompts = data.get("core_prompts", [])
+        if not isinstance(raw_prompts, list):
             return []
 
+        prompt_strings: List[str] = []
+        for item_any in cast(Iterable[Any], raw_prompts):
+            if isinstance(item_any, str):
+                prompt_strings.append(item_any)
         prompts: List[Prompt] = []
-        for i, text in enumerate(prompts_list_raw):
-            if isinstance(text, str):
-                prompts.append(Prompt(text=text, category="core", index=i))
+        for i, text in enumerate(prompt_strings):
+            prompts.append(Prompt(text=text, category="core", index=i))
         return prompts
 
     def get_follow_up(self) -> str:
@@ -63,10 +66,14 @@ class PromptsManager(IPromptsManager):
     def get_probes(self) -> List[str]:
         """Get probe prompts."""
         data = self._load_prompts()
-        probes_raw = data.get("probes", [])
-        if not isinstance(probes_raw, list):
+        raw_probes = data.get("probes", [])
+        if not isinstance(raw_probes, list):
             return []
-        return [probe for probe in probes_raw if isinstance(probe, str)]
+        probes_strings: List[str] = []
+        for probe_any in cast(Iterable[Any], raw_probes):
+            if isinstance(probe_any, str):
+                probes_strings.append(probe_any)
+        return probes_strings
 
     def reload(self) -> None:
         """Force reload of prompts from disk."""

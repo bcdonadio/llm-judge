@@ -145,8 +145,11 @@ class ConfigurationManager(IConfigurationManager):
     def _deep_merge(target: Dict[str, Any], source: Mapping[str, Any]) -> None:
         """Deep merge source into target dictionary."""
         for key, value in source.items():
-            if key in target and isinstance(target[key], dict) and isinstance(value, dict):
-                ConfigurationManager._deep_merge(target[key], value)
+            target_value = target.get(key)
+            if isinstance(target_value, dict) and isinstance(value, Mapping):
+                nested_target = cast(Dict[str, Any], target_value)
+                nested_source = cast(Mapping[str, Any], value)
+                ConfigurationManager._deep_merge(nested_target, nested_source)
             else:
                 target[key] = value
 
