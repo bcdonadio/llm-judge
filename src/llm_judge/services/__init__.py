@@ -22,6 +22,10 @@ class IAPIClient(Protocol):
         """Execute a chat completion request."""
         ...
 
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Retrieve the catalog of available models."""
+        ...
+
     def close(self) -> None:
         """Close connections and cleanup resources."""
         ...

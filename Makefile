@@ -148,7 +148,7 @@ webdev:
 	PYTHONUNBUFFERED=1 $(UV_RUN) python -m gunicorn llm_judge.webapp:app --worker-class $(GUNICORN_WORKER_CLASS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --workers $(GUNICORN_WORKERS) --bind 0.0.0.0:5000 --reload & \
 	cd webui && $(WEBUI_NPM) install && $(WEBUI_NPM) run dev -- --host 0.0.0.0 --port 5173
 
-devstack-start:
+devstack-start: web-build
 	$(DEVSTACK) start \
 		--backend-host $(DEVSTACK_BACKEND_HOST) \
 		--backend-port $(DEVSTACK_BACKEND_PORT) \

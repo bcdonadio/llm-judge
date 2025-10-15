@@ -645,6 +645,9 @@ class DummyAPIClientRunner:
     def close(self) -> None:
         return None
 
+    def list_models(self) -> List[Dict[str, Any]]:
+        return []
+
 
 class DummyJudgeServiceRunner:
     def __init__(self) -> None:
@@ -799,6 +802,40 @@ def test_process_prompt_signature_errors(tmp_path: Path) -> None:
         runner._process_prompt("model", tmp_path, "not-a-prompt", writer, {})  # type: ignore[call-overload]
     with pytest.raises(TypeError):
         runner._process_prompt("model", tmp_path)  # type: ignore[call-overload]
+
+
+def test_normalize_modern_prompt_validation(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["m"]))
+    prompt = Prompt(text="p", category="core", index=0)
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+
+    with pytest.raises(TypeError, match="requires writer"):
+        runner._normalize_modern_prompt(prompt, (writer,))
+
+    with pytest.raises(TypeError, match="Expected csv\\.DictWriter"):
+        runner._normalize_modern_prompt(prompt, (object(), {}))
+
+    with pytest.raises(TypeError, match="summary"):
+        runner._normalize_modern_prompt(prompt, (writer, []))
+
+
+def test_normalize_legacy_prompt_validation(tmp_path: Path) -> None:
+    runner = LLMJudgeRunner(build_config(tmp_path, models=["m"]))
+    writer = csv.DictWriter(io.StringIO(), fieldnames=CSV_FIELDNAMES)
+    writer.writeheader()
+
+    with pytest.raises(TypeError, match="requires prompt text"):
+        runner._normalize_legacy_prompt(0, ("prompt", writer))
+
+    with pytest.raises(TypeError, match="prompt text as a string"):
+        runner._normalize_legacy_prompt(0, (123, writer, {}))
+
+    with pytest.raises(TypeError, match="csv.DictWriter"):
+        runner._normalize_legacy_prompt(0, ("prompt", object(), {}))
+
+    with pytest.raises(TypeError, match="summary dictionary"):
+        runner._normalize_legacy_prompt(0, ("prompt", writer, []))
 
 
 def test_normalize_result_section_handles_non_dict() -> None:

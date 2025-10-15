@@ -1,13 +1,29 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import userEvent from "@testing-library/user-event";
 import { tick } from "svelte";
+import { within } from "@testing-library/dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ControlPanel from "./ControlPanel.svelte";
-import { formatLimit, parseLimit, parseModels } from "./control-panel-helpers";
+import {
+  deriveJudgeOptionsRendered,
+  displayModelName,
+  formatLimit,
+  judgeOptionKey,
+  modelCheckboxValue,
+  modelKey,
+  parseLimit,
+} from "./control-panel-helpers";
 import * as stores from "@/lib/stores";
 import type { RunConfig, RunState } from "@/lib/types";
 
-const { statusStore, defaultsStore } = stores;
+const { statusStore, defaultsStore, modelCatalogStore } = stores;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const controlPanelSourcePath = resolve(__dirname, "./ControlPanel.svelte");
 
 const baseStatus = {
   state: "idle" as const,
@@ -22,6 +38,15 @@ describe("ControlPanel", () => {
     vi.restoreAllMocks();
     statusStore.set({ ...baseStatus });
     defaultsStore.set(null);
+    modelCatalogStore.set([
+      {
+        id: "qwen/qwen3-next-80b-a3b-instruct",
+        name: "Qwen Next 80B",
+      },
+      { id: "first", name: "First" },
+      { id: "second", name: "Second" },
+      { id: "judge-x", name: "Judge X" },
+    ]);
   });
 
   it("hydrates fields from the defaults store once", async () => {
@@ -41,19 +66,29 @@ describe("ControlPanel", () => {
     render(ControlPanel);
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Models to evaluate")).toHaveValue(
-        "first\nsecond",
-      );
+      expect(screen.getByRole("checkbox", { name: /First/ })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: /Second/ })).toBeChecked();
     });
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Judge model")).toHaveValue("judge-x");
+      expect(
+        screen.getByLabelText("Judge model") as HTMLSelectElement,
+      ).toHaveValue("judge-x");
     });
     await waitFor(() => {
-      expect(screen.getByLabelText("Prompt limit")).toHaveValue(3);
+      expect(screen.getByLabelText("Max rounds")).toHaveValue(3);
     });
     await waitFor(() => {
       expect(screen.getByLabelText("Output directory")).toHaveValue("custom");
+      const selectedGroup = screen.getByRole("group", {
+        name: "Selected models",
+      });
+      const selectedItems = within(selectedGroup).getAllByText(/First|Second/);
+      expect(
+        selectedItems.map((node) =>
+          node.textContent?.replace(/^[X×]\s*/, "").trim(),
+        ),
+      ).toEqual(["First", "Second"]);
     });
   });
 
@@ -63,13 +98,14 @@ describe("ControlPanel", () => {
 
     render(ControlPanel);
 
-    await user.clear(screen.getByLabelText("Models to evaluate"));
+    await user.click(screen.getByRole("checkbox", { name: /Qwen Next 80B/ }));
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(startSpy).not.toHaveBeenCalled();
     expect(
       screen.getByText("Please provide at least one model slug."),
     ).toBeInTheDocument();
+    expect(screen.getByText("No models selected.")).toBeInTheDocument();
   });
 
   it("submits parsed configuration to the backend", async () => {
@@ -78,13 +114,9 @@ describe("ControlPanel", () => {
 
     render(ControlPanel);
 
-    const modelsTextarea = screen.getByLabelText("Models to evaluate");
-    await user.clear(modelsTextarea);
-    await user.type(modelsTextarea, "model-a, model-b");
+    await user.click(screen.getByRole("checkbox", { name: /First/ }));
 
-    const limitInput = screen.getByLabelText(
-      "Prompt limit",
-    ) as HTMLInputElement;
+    const limitInput = screen.getByLabelText("Max rounds") as HTMLInputElement;
     await user.clear(limitInput);
     await fireEvent.input(limitInput, { target: { value: "   " } });
     expect(limitInput.value).toBe("");
@@ -92,7 +124,7 @@ describe("ControlPanel", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
 
     expect(stores.startRun).toHaveBeenCalledWith({
-      models: ["model-a", "model-b"],
+      models: ["qwen/qwen3-next-80b-a3b-instruct", "first"],
       judge_model: "x-ai/grok-4-fast",
       limit: null,
       max_tokens: 8000,
@@ -108,13 +140,146 @@ describe("ControlPanel", () => {
     expect(screen.getByText("Evaluation run triggered.")).toBeInTheDocument();
   });
 
-  it("exposes parsing helpers for models and limits", () => {
-    expect(parseModels("one, two\nthree")).toEqual(["one", "two", "three"]);
+  it("keeps judge and prompt inputs within layout bounds", () => {
+    render(ControlPanel);
+
+    const source = readFileSync(controlPanelSourcePath, "utf-8");
+    const rowRule = source.match(
+      /\.row\s*\{[^}]*grid-template-columns:[^}]*\}/,
+    );
+    expect(rowRule).toBeTruthy();
+    expect(rowRule?.[0]).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1.5fr\)\s*minmax\(0,\s*0.75fr\)/,
+    );
+
+    const fieldRule = source.match(/\.row select,[^}]*\.row input\s*\{[^}]*\}/);
+    expect(fieldRule).toBeTruthy();
+    expect(fieldRule?.[0]).toMatch(/width:\s*100%/);
+  });
+
+  it("allows removing selected models via the chip list", async () => {
+    const user = userEvent.setup();
+    render(ControlPanel);
+
+    const removeButton = screen.getByRole("button", {
+      name: /Deselect Qwen Next 80B/i,
+    });
+    await user.click(removeButton);
+
+    expect(screen.getByText("No models selected.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /Qwen Next 80B/ }),
+    ).not.toBeChecked();
+  });
+
+  it("shows a fallback notice when the catalog is empty", () => {
+    modelCatalogStore.set([]);
+    render(ControlPanel);
+    expect(
+      screen.getByText(
+        /Model catalog unavailable\. Verify OpenRouter connectivity\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a fallback judge option when none are available", async () => {
+    defaultsStore.set({
+      models: [],
+      judge_model: "",
+      limit: 1,
+      max_tokens: 8000,
+      judge_max_tokens: 6000,
+      temperature: 0.2,
+      judge_temperature: 0.0,
+      sleep_s: 0.2,
+      outdir: "results",
+      verbose: false,
+    });
+    modelCatalogStore.set([]);
+
+    render(ControlPanel);
+
+    const judgeSelect = screen.getByLabelText(
+      "Judge model",
+    ) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(judgeSelect.options).toHaveLength(1);
+      expect(judgeSelect.value).toBe("");
+    });
+  });
+
+  it("falls back to model identifiers when names are missing", async () => {
+    defaultsStore.set({
+      models: ["orphan"],
+      judge_model: "judge-x",
+      limit: 1,
+      max_tokens: 8000,
+      judge_max_tokens: 6000,
+      temperature: 0.2,
+      judge_temperature: 0.0,
+      sleep_s: 0.2,
+      outdir: "results",
+      verbose: false,
+    });
+    modelCatalogStore.set([{ id: "orphan" }]);
+
+    render(ControlPanel);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Deselect orphan" }),
+      ).toBeInTheDocument();
+    });
+
+    const selectedGroup = screen.getByRole("group", {
+      name: "Selected models",
+    });
+    expect(within(selectedGroup).getAllByText("orphan")).not.toHaveLength(0);
+
+    const availableGroup = screen.getByRole("group", {
+      name: "Available models",
+    });
+    expect(within(availableGroup).getAllByText("orphan")).not.toHaveLength(0);
+  });
+
+  it("positions model checkboxes inline with their labels", () => {
+    render(ControlPanel);
+    const source = readFileSync(controlPanelSourcePath, "utf-8");
+    const modelItemRule = source.match(/\.model-item\s*\{[^}]*\}/);
+    expect(modelItemRule).toBeTruthy();
+    expect(modelItemRule?.[0]).toMatch(/align-items:\s*center;/);
+    expect(modelItemRule?.[0]).toMatch(/flex-direction:\s*row;/);
+
+    const checkboxRule = source.match(
+      /\.model-item\s*input\[type="checkbox"\]\s*\{[^}]*\}/,
+    );
+    expect(checkboxRule).toBeTruthy();
+    expect(checkboxRule?.[0]).toMatch(/margin:\s*0;/);
+  });
+
+  it("exposes parsing helpers and mapping utilities", () => {
     expect(parseLimit("   ")).toBeNull();
     expect(parseLimit("42")).toBe(42);
     expect(formatLimit(5)).toBe("5");
     expect(formatLimit(null)).toBe("");
     expect(formatLimit(undefined)).toBe("");
+    expect(displayModelName({ id: "plain" })).toBe("plain");
+    expect(displayModelName({ id: "with-name", name: "Named" })).toBe("Named");
+    expect(
+      deriveJudgeOptionsRendered([{ id: "m", name: "Model" }], "fallback"),
+    ).toEqual([{ id: "m", name: "Model" }]);
+    expect(deriveJudgeOptionsRendered([], "fallback")).toEqual([
+      { id: "fallback", name: "fallback" },
+    ]);
+    expect(modelKey({ id: "mid" }, 2)).toBe("mid");
+    expect(modelKey({ id: "" }, 3)).toBe("model-3");
+    expect(judgeOptionKey({ id: "judge" }, 0)).toBe("judge-judge");
+    expect(judgeOptionKey({ id: "", name: "Judge" }, 1)).toBe(
+      "judge-name-Judge",
+    );
+    expect(judgeOptionKey({ id: "", name: "" }, 2)).toBe("judge-fallback-2");
+    expect(modelCheckboxValue({ id: "abc" })).toBe("abc");
+    expect(modelCheckboxValue({ id: "", name: "Readable" })).toBe("Readable");
   });
 
   it("handles backend errors for lifecycle actions", async () => {
@@ -139,7 +304,6 @@ describe("ControlPanel", () => {
 
       render(ControlPanel);
 
-      await user.type(screen.getByLabelText("Models to evaluate"), "single");
       await user.click(screen.getByRole("button", { name: "Run" }));
       expect(screen.getByText("Unable to start run")).toBeInTheDocument();
 

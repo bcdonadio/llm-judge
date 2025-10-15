@@ -2,13 +2,24 @@
 
 import threading
 import logging
-from typing import List, Dict, Any, Optional, cast
+from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
 import httpx
 from openai import OpenAI, OpenAIError
 
 from ..domain import ModelResponse
 from ..services import IAPIClient
+
+
+def _filter_model_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+    sanitized: Dict[str, Any] = {}
+    items_iter = cast(Iterable[Tuple[Any, Any]], entry.items())
+    for key_any, value_any in items_iter:
+        if isinstance(key_any, str):
+            sanitized[key_any] = value_any
+    return sanitized
 
 
 class OpenRouterClient(IAPIClient):
@@ -44,6 +55,36 @@ class OpenRouterClient(IAPIClient):
                 )
                 self._logger.debug("Initialized OpenRouter client with persistent HTTP/2 connection pool.")
             return self._client
+
+    def list_models(self) -> List[Dict[str, Any]]:
+        """Fetch available models from OpenRouter."""
+        with self._lock:
+            self._ensure_client()
+            if self._http_client is None:
+                raise RuntimeError("OpenRouter HTTP client not initialised.")
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self._api_key}",
+            }
+            try:
+                response = self._http_client.get(f"{self._base_url}/models", headers=headers)
+                response.raise_for_status()
+                payload = cast(Dict[str, Any], response.json())
+            except Exception as exc:
+                self._logger.error("Failed to fetch OpenRouter model catalog: %s", exc)
+                raise
+
+        raw_data = payload.get("data")
+        if not isinstance(raw_data, list):
+            raise ValueError("Unexpected response payload for model catalog.")
+
+        raw_entries: List[Any] = list(cast(Iterable[Any], raw_data))
+        filtered: List[Dict[str, Any]] = []
+        for entry in raw_entries:
+            cleaned = _filter_model_entry(entry)
+            if cleaned:
+                filtered.append(cleaned)
+        return filtered
 
     def chat_completion(
         self,

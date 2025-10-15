@@ -55,12 +55,12 @@ CSV_FIELDNAMES = [
 class CsvWriter(Protocol):
     def writeheader(self) -> Any:
         """Write the CSV header."""
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - protocol placeholder
 
     def writerow(self, rowdict: Mapping[str, Any]) -> Any:
         """Write a single row to the CSV output."""
-        _ = rowdict
-        raise NotImplementedError
+        _ = rowdict  # pragma: no cover - protocol placeholder
+        raise NotImplementedError  # pragma: no cover - protocol placeholder
 
 
 @dataclass(frozen=True)
@@ -631,6 +631,7 @@ class LLMJudgeRunner:
                 return True
         return False
 
+    # fmt: off
     @overload
     def _process_prompt(
         self,
@@ -640,7 +641,7 @@ class LLMJudgeRunner:
         writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
-        pass
+        ...  # pragma: no cover - overload for type checkers only
 
     @overload
     def _process_prompt(
@@ -652,7 +653,8 @@ class LLMJudgeRunner:
         writer: CsvWriter,
         summary_data: Dict[str, List[Dict[str, Any]]],
     ) -> bool:
-        pass
+        ...  # pragma: no cover - overload for type checkers only
+    # fmt: on
 
     def _process_prompt(  # type: ignore[misc]
         self,

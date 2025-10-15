@@ -45,6 +45,9 @@ class DummyAPIClient:
     def close(self) -> None:
         pass
 
+    def list_models(self) -> List[Dict[str, Any]]:
+        return []
+
 
 @pytest.fixture()
 def run_config(tmp_path: Path) -> RunConfiguration:
