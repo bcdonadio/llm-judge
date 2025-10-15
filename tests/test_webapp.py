@@ -292,6 +292,19 @@ def test_job_manager_cancel(tmp_path: Path) -> None:
     assert manager.cancel() is False
 
 
+def test_job_manager_supported_models(tmp_path: Path) -> None:
+    manager = JobManager(outdir=tmp_path)
+    catalog = [{"id": "model-a"}, {"id": "model-b"}]
+    manager.set_supported_models(catalog)
+
+    catalog.append({"id": "model-c"})
+    retrieved = manager.get_supported_models()
+    assert retrieved == [{"id": "model-a"}, {"id": "model-b"}]
+
+    retrieved.append({"id": "model-d"})
+    assert manager.get_supported_models() == [{"id": "model-a"}, {"id": "model-b"}]
+
+
 def test_threaded_runner_control_waits_until_resumed() -> None:
     control = ThreadedRunnerControl(poll_interval=0.001)
     control.pause()
@@ -515,6 +528,7 @@ class DummyManager:
     def __init__(self) -> None:
         self.started_with: Dict[str, Any] | None = None
         self.state = "idle"
+        self._models = [{"id": "qwen/qwen3-next-80b-a3b-instruct"}]
 
     def defaults(self) -> Dict[str, Any]:
         return {
@@ -540,6 +554,9 @@ class DummyManager:
             },
             "history": [],
         }
+
+    def get_supported_models(self) -> List[Dict[str, Any]]:
+        return list(self._models)
 
     def start_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         models = payload.get("models")
@@ -592,6 +609,10 @@ def test_flask_api_routes(tmp_path: Path) -> None:
     defaults_payload = defaults_resp.get_json()
     assert defaults_payload["judge_model"] == "x-ai/grok-4-fast"
     assert defaults_payload["models"] == ["qwen/qwen3-next-80b-a3b-instruct"]
+
+    models_resp = client.get("/api/models")
+    assert models_resp.status_code == 200
+    assert models_resp.get_json() == {"models": dummy.get_supported_models()}
 
     run_error = client.post("/api/run", json={"models": [], "judge_model": "x-ai/grok-4-fast"})
     assert run_error.status_code == 400
@@ -658,6 +679,8 @@ def test_create_app_configures_temp_outdir() -> None:
     assert outdir.exists()
     with pytest.raises(ValueError):
         outdir.relative_to(project_root)
+    models_cache = cast(List[Dict[str, Any]], app.config["OPENROUTER_MODELS"])
+    assert isinstance(models_cache, list)
 
 
 def test_job_manager_event_stream_includes_history(tmp_path: Path) -> None:
@@ -752,8 +775,15 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     from llm_judge.domain import ModelResponse, JudgeDecision, Prompt
 
     class APIClientStub:
+        def __init__(self) -> None:
+            self.calls: Dict[str, Any] = {}
+
         def chat_completion(self, **_: Any) -> ModelResponse:
             return ModelResponse(text="", raw_payload={})
+
+        def list_models(self) -> List[Dict[str, Any]]:
+            self.calls["list_models"] = True
+            return [{"id": "stub/model-a", "name": "Model A"}]
 
     class JudgeServiceStub:
         def evaluate(self, **_: Any) -> JudgeDecision:
@@ -779,9 +809,10 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         def get_follow_up(self) -> str:
             return "follow"
 
+    api_client_stub = APIClientStub()
     container = StubContainer(
         {
-            IAPIClient: APIClientStub(),
+            IAPIClient: api_client_stub,
             IJudgeService: JudgeServiceStub(),
             IPromptsManager: PromptsManagerStub(),
         }
@@ -810,3 +841,37 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     runner = factory(config, noop, RunnerControl())
     assert isinstance(runner, LLMJudgeRunner)
+    assert app.config["OPENROUTER_MODELS"] == [{"id": "stub/model-a", "name": "Model A"}]
+    assert api_client_stub.calls.get("list_models") is True
+    assert manager.get_supported_models() == [{"id": "stub/model-a", "name": "Model A"}]
+
+
+def test_create_app_respects_base_url(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    app = create_app(
+        {
+            "FRONTEND_DIST": str(dist_dir),
+            "RUNS_OUTDIR": str(tmp_path / "runs"),
+            "OPENROUTER_BASE_URL": "https://custom.example/api",
+        }
+    )
+    assert app.config["OPENROUTER_BASE_URL"] == "https://custom.example/api"
+
+
+def test_create_app_raises_when_di_factory_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    monkeypatch.setattr(webapp_module, "has_di_support", True)
+    monkeypatch.setattr(webapp_module, "_runner_factory", None)
+
+    dummy_container = cast(webapp_module.ServiceContainerType, StubContainer({}))
+
+    with pytest.raises(RuntimeError, match="Dependency injection support is not available"):
+        create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")}, container=dummy_container)
+
+
+def test_load_supported_models_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    models = webapp_module._load_supported_models(None, base_url="https://example.com")
+    assert models == []

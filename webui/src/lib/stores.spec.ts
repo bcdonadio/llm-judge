@@ -14,6 +14,7 @@ import {
   initializeStores,
   isActiveState,
   messagesStore,
+  modelCatalogStore,
   pauseRun,
   resumeRun,
   scoreboardStore,
@@ -74,6 +75,7 @@ describe("stores", () => {
     messagesStore.set([]);
     artifactsStore.set(null);
     defaultsStore.set(null);
+    modelCatalogStore.set([]);
     MockEventSource.instances = [];
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -126,9 +128,19 @@ describe("stores", () => {
       summary,
       artifacts: { csv_path: "file.csv", runs_dir: "dir" },
     };
+    const catalog = {
+      models: [
+        { id: "model-a", name: "Model A" },
+        { id: "model-b", name: "Model B" },
+      ],
+    };
 
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => catalog,
+      })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => defaults,
@@ -141,12 +153,16 @@ describe("stores", () => {
 
     await initializeStores();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(get(defaultsStore)).toEqual(defaults);
     expect(get(statusStore)).toMatchObject({ state: "running" });
     expect(get(scoreboardStore)).toEqual(summary);
     expect(get(artifactsStore)).toEqual(status.artifacts);
     expect(get(messagesStore)).toEqual([]);
+    expect(get(modelCatalogStore)).toEqual([
+      { id: "model-a", name: "Model A" },
+      { id: "model-b", name: "Model B" },
+    ]);
   });
 
   it("clears local state when snapshot fetch fails", async () => {
@@ -160,19 +176,23 @@ describe("stores", () => {
       },
     ]);
     artifactsStore.set({ csv_path: "existing.csv" });
+    modelCatalogStore.set([{ id: "existing", name: "Existing" }]);
 
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
       .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
       .mockResolvedValueOnce({ ok: false, json: async () => ({}) });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     await initializeStores();
 
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(get(defaultsStore)).toBeNull();
     expect(get(scoreboardStore)).toEqual({});
     expect(get(messagesStore)).toEqual([]);
     expect(get(artifactsStore)).toBeNull();
+    expect(get(modelCatalogStore)).toEqual([]);
   });
 
   it("recovers from initialization errors", async () => {
@@ -190,7 +210,90 @@ describe("stores", () => {
     );
     expect(get(scoreboardStore)).toEqual({});
     expect(get(artifactsStore)).toBeNull();
+    expect(get(modelCatalogStore)).toEqual([]);
     errorSpy.mockRestore();
+  });
+
+  it("handles non-object model catalogs", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => null })
+      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ status: { ...defaultStatus }, history: [] }),
+      });
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await initializeStores();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(get(modelCatalogStore)).toEqual([]);
+  });
+
+  it("normalises catalog entries and preserves metadata", async () => {
+    const catalog = {
+      models: [
+        null,
+        { id: "   " },
+        {
+          id: "model-c",
+          name: " Charlie  ",
+          description: "  Insight  ",
+          extra: "keep",
+        },
+        { id: "model-a", name: "Alpha", description: "Leading" },
+        { id: "model-b", name: "  beta ", description: "   " },
+        { id: "model-a", name: "Duplicate" },
+        { id: "model-d", other: "value" },
+        { id: "model-e", name: "", description: null },
+        { id: "model-f", description: "Desc" },
+        { id: "model-g", name: "Zed" },
+        { id: "model-h", name: "ZED", description: "Upper" },
+      ],
+    } satisfies Record<string, unknown>;
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => catalog })
+      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ status: { ...defaultStatus }, history: [] }),
+      });
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await initializeStores();
+
+    expect(get(modelCatalogStore)).toEqual([
+      { id: "model-a", name: "Alpha", description: "Leading" },
+      { id: "model-b", name: "beta" },
+      { id: "model-c", name: "Charlie", description: "Insight", extra: "keep" },
+      { id: "model-d", other: "value" },
+      { id: "model-e" },
+      { id: "model-f", description: "Desc" },
+      { id: "model-g", name: "Zed" },
+      { id: "model-h", name: "ZED", description: "Upper" },
+    ]);
+  });
+
+  it("returns an empty catalog when the models list is missing", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ status: { ...defaultStatus }, history: [] }),
+      });
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await initializeStores();
+
+    expect(get(modelCatalogStore)).toEqual([]);
   });
 
   function emit(instance: MockEventSource, name: string, payload: unknown) {

@@ -1,9 +1,20 @@
 import { render, screen, waitFor } from "@testing-library/svelte";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import * as stores from "@/lib/stores";
 
 const { artifactsStore } = stores;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const appSourcePath = resolve(__dirname, "./App.svelte");
+const chatWindowSourcePath = resolve(
+  __dirname,
+  "./lib/components/ChatWindow.svelte",
+);
 
 describe("App", () => {
   beforeEach(() => {
@@ -71,5 +82,48 @@ describe("App", () => {
     unmount();
     expect(disconnectMock).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it("keeps the conversation panel scrollable without clipping", async () => {
+    const disconnectMock = vi.fn();
+    vi.spyOn(stores, "initializeStores").mockResolvedValue();
+    vi.spyOn(stores, "connectEvents").mockReturnValue(disconnectMock);
+
+    const { unmount } = render(App);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Loading dashboard…")).not.toBeInTheDocument();
+    });
+
+    const appSource = readFileSync(appSourcePath, "utf-8");
+    const chatSource = readFileSync(chatWindowSourcePath, "utf-8");
+
+    const chatWrapperBlock = appSource.match(/\.chat-wrapper\s*\{[^}]*\}/);
+    const chatWrapperBlockText = chatWrapperBlock?.[0] ?? "";
+    expect(chatWrapperBlockText).not.toEqual("");
+    expect(chatWrapperBlockText).toMatch(/min-height:\s*0;/);
+    expect(chatWrapperBlockText).toMatch(/display:\s*flex;/);
+    expect(chatWrapperBlockText).not.toMatch(/overflow\s*:\s*hidden/);
+
+    const chatWrapperChildBlock = appSource.match(
+      /\.chat-wrapper\s*:global\(\.chat-window\)\s*\{[^}]*\}/,
+    );
+    const chatWrapperChildText = chatWrapperChildBlock?.[0] ?? "";
+    expect(chatWrapperChildText).not.toEqual("");
+    expect(chatWrapperChildText).toMatch(/flex:\s*1;/);
+    expect(chatWrapperChildText).toMatch(/min-height:\s*0;/);
+
+    const chatWindowBlock = chatSource.match(/\.chat-window\s*\{[^}]*\}/);
+    const chatWindowBlockText = chatWindowBlock?.[0] ?? "";
+    expect(chatWindowBlockText).not.toEqual("");
+    expect(chatWindowBlockText).toMatch(/box-sizing:\s*border-box;/);
+
+    const messagesBlock = chatSource.match(/\.messages\s*\{[^}]*\}/);
+    const messagesBlockText = messagesBlock?.[0] ?? "";
+    expect(messagesBlockText).not.toEqual("");
+    expect(messagesBlockText).toMatch(/overflow-y:\s*auto;/);
+
+    unmount();
+    expect(disconnectMock).toHaveBeenCalled();
   });
 });

@@ -3,6 +3,8 @@ import type {
   ArtifactsInfo,
   DefaultsResponse,
   EventPayload,
+  ModelInfo,
+  ModelsResponse,
   MessageEntry,
   ModelSummary,
   RunConfig,
@@ -23,6 +25,7 @@ export const scoreboardStore = writable<Record<string, ModelSummary>>({});
 export const messagesStore = writable<MessageEntry[]>([]);
 export const artifactsStore = writable<ArtifactsInfo | null>(null);
 export const defaultsStore = writable<DefaultsResponse | null>(null);
+export const modelCatalogStore = writable<ModelInfo[]>([]);
 
 let eventSource: EventSource | null = null;
 
@@ -84,12 +87,74 @@ function updateStatus(payload: StatusPayload): void {
   }
 }
 
+function normaliseModelCatalog(raw: unknown): ModelInfo[] {
+  if (!raw || typeof raw !== "object") {
+    return [];
+  }
+  const response = raw as Partial<ModelsResponse>;
+  if (!response.models || !Array.isArray(response.models)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const result: ModelInfo[] = [];
+  for (const entry of response.models) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const idValue = (entry as Record<string, unknown>).id;
+    if (typeof idValue !== "string" || !idValue.trim()) {
+      continue;
+    }
+    const id = idValue.trim();
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const nameValue = (entry as Record<string, unknown>).name;
+    const descriptionValue = (entry as Record<string, unknown>).description;
+    const model: ModelInfo = {
+      id,
+      ...(typeof nameValue === "string" && nameValue.trim()
+        ? { name: nameValue.trim() }
+        : {}),
+      ...(typeof descriptionValue === "string" && descriptionValue.trim()
+        ? { description: descriptionValue.trim() }
+        : {}),
+    };
+    for (const [key, value] of Object.entries(entry)) {
+      if (key === "id" || key === "name" || key === "description") {
+        continue;
+      }
+      model[key] = value;
+    }
+    result.push(model);
+  }
+
+  result.sort((a, b) => {
+    const lhs = (a.name ?? a.id).toLowerCase();
+    const rhs = (b.name ?? b.id).toLowerCase();
+    if (lhs < rhs) return -1;
+    if (lhs > rhs) return 1;
+    return 0;
+  });
+
+  return result;
+}
+
 export async function initializeStores(): Promise<void> {
   try {
-    const [defaultsResp, snapshotResp] = await Promise.all([
+    const [modelsResp, defaultsResp, snapshotResp] = await Promise.all([
+      fetch("/api/models"),
       fetch("/api/defaults"),
       fetch("/api/state"),
     ]);
+
+    if (modelsResp.ok) {
+      const modelsJson = (await modelsResp.json()) as unknown;
+      modelCatalogStore.set(normaliseModelCatalog(modelsJson));
+    } else {
+      modelCatalogStore.set([]);
+    }
 
     if (defaultsResp.ok) {
       const defaults = (await defaultsResp.json()) as DefaultsResponse;
@@ -110,6 +175,7 @@ export async function initializeStores(): Promise<void> {
   } catch (error) {
     console.error("Failed to initialise web UI state", error);
     clearTimeline();
+    modelCatalogStore.set([]);
   }
 }
 

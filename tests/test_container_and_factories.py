@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pytest
 
@@ -23,6 +23,45 @@ from llm_judge.services import (
     IJudgeService,
     IPromptsManager,
 )
+
+
+class RunnerStubAPIClient:
+    def chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        metadata: dict[str, str],
+        response_format: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> ModelResponse:
+        return ModelResponse(text="", raw_payload={"model": model, "messages": messages})
+
+    def close(self) -> None:  # pragma: no cover
+        pass
+
+    def list_models(self) -> List[Dict[str, Any]]:  # pragma: no cover
+        return []
+
+
+class RunnerStubJudgeService:
+    def evaluate(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
+        return args, kwargs
+
+
+class RunnerStubPromptsManager:
+    def get_core_prompts(self) -> Any:  # pragma: no cover
+        return []
+
+
+class RunnerStubFS:
+    def write_json(self, path: Path, data: Any) -> None:
+        path.write_text(json.dumps(data))
+
+    def create_temp_dir(self, prefix: str = "tmp-") -> Path:  # pragma: no cover
+        return Path(prefix)
 
 
 class Closeable:
@@ -92,6 +131,9 @@ def test_create_container_registers_dependencies(monkeypatch: pytest.MonkeyPatch
             super().__init__()
             calls["api_client"] = kwargs
 
+        def list_models(self) -> List[Dict[str, Any]]:
+            return []
+
     class StubPromptsManager:
         def __init__(self, **kwargs: Any) -> None:
             calls["prompts_manager"] = kwargs
@@ -136,43 +178,10 @@ def test_create_container_registers_dependencies(monkeypatch: pytest.MonkeyPatch
 
 def test_runner_factory_and_unit_of_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     container = ServiceContainer()
-
-    class StubAPIClient:
-        def chat_completion(
-            self,
-            *,
-            model: str,
-            messages: list[dict[str, str]],
-            max_tokens: int,
-            temperature: float,
-            metadata: dict[str, str],
-            response_format: dict[str, Any] | None = None,
-            **kwargs: Any,
-        ) -> ModelResponse:
-            return ModelResponse(text="", raw_payload={"model": model, "messages": messages})
-
-        def close(self) -> None:  # pragma: no cover
-            pass
-
-    class StubJudgeService:
-        def evaluate(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
-            return args, kwargs
-
-    class StubPromptsManager:
-        def get_core_prompts(self) -> Any:  # pragma: no cover
-            return []
-
-    class StubFS:
-        def write_json(self, path: Path, data: Any) -> None:
-            path.write_text(json.dumps(data))
-
-        def create_temp_dir(self, prefix: str = "tmp-") -> Path:  # pragma: no cover
-            return Path(prefix)
-
-    container.register_singleton(IAPIClient, StubAPIClient())
-    container.register_singleton(IJudgeService, StubJudgeService())
-    container.register_singleton(IPromptsManager, StubPromptsManager())
-    container.register_singleton(IFileSystemService, StubFS())
+    container.register_singleton(IAPIClient, RunnerStubAPIClient())
+    container.register_singleton(IJudgeService, RunnerStubJudgeService())
+    container.register_singleton(IPromptsManager, RunnerStubPromptsManager())
+    container.register_singleton(IFileSystemService, RunnerStubFS())
 
     runner_factory = RunnerFactory(container)
     config = RunnerConfig(

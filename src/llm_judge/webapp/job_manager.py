@@ -85,6 +85,7 @@ class JobManager:
         self._active_config: Dict[str, Any] | None = None
         self._started_at: float | None = None
         self._finished_at: float | None = None
+        self._supported_models: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -92,6 +93,14 @@ class JobManager:
     @property
     def outdir(self) -> Path:
         return self._outdir
+
+    def set_supported_models(self, models: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            self._supported_models = copy.deepcopy(models)
+
+    def get_supported_models(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self._supported_models)
 
     def start_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         config = self._build_config(payload)

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import sys
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, cast
 
+import httpx
 import pytest
 
 from llm_judge.domain import ModelResponse
@@ -85,6 +86,30 @@ class DummyHTTPClient:
 
     def close(self) -> None:
         self.closed = True
+
+
+class DummyModelHTTPResponse:
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        self._payload = payload
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Dict[str, Any]:
+        return self._payload
+
+
+class DummyModelHTTPClient(DummyHTTPClient):
+    last_request: Dict[str, Any] | None = None
+
+    def __init__(self, *, payload: Dict[str, Any] | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._payload = payload or {"data": []}
+
+    def get(self, url: str, headers: Dict[str, str]) -> DummyModelHTTPResponse:
+        DummyModelHTTPClient.last_request = {"url": url, "headers": headers}
+        return DummyModelHTTPResponse(self._payload)
 
 
 def _run_completion(
@@ -198,6 +223,118 @@ def test_chat_completion_error(monkeypatch: pytest.MonkeyPatch) -> None:
             temperature=0.0,
             metadata={"title": "Test"},
         )
+
+
+def test_list_models_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: Dict[str, List[Dict[str, str]]] = {"data": [{"id": "model-a"}, {"id": "model-b"}]}
+
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": []}, **kwargs)
+
+    def client_factory(**kwargs: Any) -> DummyModelHTTPClient:
+        return DummyModelHTTPClient(payload=payload, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", client_factory)
+
+    DummyModelHTTPClient.last_request = None
+    client = OpenRouterClient(api_key="secret", base_url="http://example.com")
+    models = client.list_models()
+
+    assert models == payload["data"]
+    assert DummyModelHTTPClient.last_request is not None
+    assert DummyModelHTTPClient.last_request["url"] == "http://example.com/models"
+    assert DummyModelHTTPClient.last_request["headers"]["Authorization"] == "Bearer secret"
+
+
+def test_list_models_filters_non_dict_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: Dict[str, List[Any]] = {"data": [{"id": "model-a"}, "skip-this"]}
+
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": []}, **kwargs)
+
+    def client_factory(**kwargs: Any) -> DummyModelHTTPClient:
+        return DummyModelHTTPClient(payload=payload, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", client_factory)
+
+    client = OpenRouterClient(api_key="secret")
+    models = client.list_models()
+    assert models == [{"id": "model-a"}]
+
+
+def test_list_models_ignores_entries_with_non_string_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: Dict[str, List[Any]] = {"data": [{"id": "model-a"}, {1: "bad"}]}
+
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": []}, **kwargs)
+
+    def client_factory(**kwargs: Any) -> DummyModelHTTPClient:
+        return DummyModelHTTPClient(payload=payload, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", client_factory)
+
+    client = OpenRouterClient(api_key="secret")
+    models = client.list_models()
+    assert models == [{"id": "model-a"}]
+
+
+def test_list_models_invalid_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: Dict[str, List[Any]] = {"unexpected": []}
+
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": []}, **kwargs)
+
+    def client_factory(**kwargs: Any) -> DummyModelHTTPClient:
+        return DummyModelHTTPClient(payload=payload, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", client_factory)
+
+    client = OpenRouterClient(api_key="secret")
+    with pytest.raises(ValueError):
+        client.list_models()
+
+
+def test_list_models_request_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload={"choices": []}, **kwargs)
+
+    class FailingClient(DummyHTTPClient):
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", FailingClient)
+
+    client = OpenRouterClient(api_key="secret")
+    with pytest.raises(httpx.HTTPError):
+        client.list_models()
+
+
+def test_list_models_without_http_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload: Dict[str, Any] = {"choices": []}
+
+    def openai_factory(**kwargs: Any) -> DummyOpenAI:
+        return DummyOpenAI(payload=payload, **kwargs)
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenAI", openai_factory)
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.httpx.Client", DummyHTTPClient)
+
+    client = OpenRouterClient(api_key="secret")
+
+    def ensure_without_http(self: OpenRouterClient) -> DummyOpenAI:
+        dummy = DummyOpenAI(payload=payload, api_key="ignored")
+        setattr(self, "_client", cast(Any, dummy))
+        setattr(self, "_http_client", None)
+        return dummy
+
+    monkeypatch.setattr(OpenRouterClient, "_ensure_client", ensure_without_http)
+
+    with pytest.raises(RuntimeError, match="not initialised"):
+        client.list_models()
 
 
 def test_logging_without_color(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:

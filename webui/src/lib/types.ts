@@ -7,6 +7,13 @@ export type RunState =
   | "cancelling"
   | "error";
 
+export interface ModelInfo {
+  id: string;
+  name?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
 export interface StatusPayload {
   state: RunState;
   error?: string | null;
@@ -68,4 +75,8 @@ export interface EventPayload<T = Record<string, unknown>> {
 
 export interface DefaultsResponse extends RunConfig {
   models: string[];
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[];
 }

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, Type, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, cast
 
 from flask import Blueprint, Flask, Response, current_app, jsonify, request, send_from_directory
 
 from .job_manager import JobManager
 from ..runner import RunnerConfig, RunnerControl, RunnerEvent, LLMJudgeRunner
 from ..infrastructure.utility_services import FileSystemService
+from ..services import IAPIClient
 
 if TYPE_CHECKING:
     from ..container import ServiceContainer as ServiceContainerType
@@ -105,6 +107,49 @@ def _manager() -> JobManager:
     return cast(JobManager, current_app.config["JOB_MANAGER"])
 
 
+def _load_supported_models(
+    container: Optional[ServiceContainerType],
+    *,
+    base_url: str,
+) -> List[Dict[str, Any]]:
+    logger = logging.getLogger(__name__)
+    api_client: IAPIClient | None = None
+    close_client = False
+
+    if container is not None and has_di_support:
+        try:
+            resolved_client = container.resolve(IAPIClient)
+            api_client = cast(IAPIClient, resolved_client)
+        except Exception:  # pragma: no cover - defensive
+            api_client = None
+
+    if api_client is None:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            logger.info("Skipping OpenRouter model preload: OPENROUTER_API_KEY not configured.")
+            return []
+        from ..infrastructure.api_client import OpenRouterClient
+
+        api_client = OpenRouterClient(api_key=api_key, base_url=base_url)
+        close_client = True
+
+    assert api_client is not None
+
+    try:
+        models = api_client.list_models()
+        logger.info("Loaded %d OpenRouter models", len(models))
+        return models
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("Unable to preload OpenRouter models", exc_info=True)
+        return []
+    finally:
+        if close_client:
+            try:
+                api_client.close()
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("Failed to close temporary OpenRouter client", exc_info=True)
+
+
 def _toggle_response(
     action: str,
     success_state: str,
@@ -133,6 +178,11 @@ def api_defaults() -> Response:
 @api_bp.get("/state")
 def api_state() -> Response:
     return jsonify(_manager().snapshot())
+
+
+@api_bp.get("/models")
+def api_models() -> Response:
+    return jsonify({"models": _manager().get_supported_models()})
 
 
 @api_bp.post("/run")
@@ -234,9 +284,12 @@ def create_app(
 
     app_config = cast(Dict[str, Any], app.config)
     app_config.setdefault("FRONTEND_DIST", str(frontend_dist))
+    openrouter_base_url = cast(str, app_config.setdefault("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
 
     if config:
         app_config.update(config)
+        if "OPENROUTER_BASE_URL" in config:
+            openrouter_base_url = cast(str, app_config["OPENROUTER_BASE_URL"])
 
     outdir_value = app_config.get("RUNS_OUTDIR")
     if outdir_value is None:
@@ -278,6 +331,10 @@ def create_app(
         manager = JobManager(outdir=outdir_path, runner_factory=runner_factory_fn)
     else:
         manager = JobManager(outdir=outdir_path)  # Uses default factory
+
+    models_catalog = _load_supported_models(container, base_url=openrouter_base_url)
+    manager.set_supported_models(models_catalog)
+    app.config["OPENROUTER_MODELS"] = models_catalog
 
     app.config["JOB_MANAGER"] = manager
     outdir_str = str(manager.outdir)
