@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import userEvent from "@testing-library/user-event";
 import { tick } from "svelte";
 import { within } from "@testing-library/dom";
@@ -15,9 +15,10 @@ import {
   modelCheckboxValue,
   modelKey,
   parseLimit,
+  coerceJudgeModelId,
 } from "./control-panel-helpers";
 import * as stores from "@/lib/stores";
-import type { RunConfig, RunState } from "@/lib/types";
+import type { ModelInfo, RunConfig, RunState } from "@/lib/types";
 
 const { statusStore, defaultsStore, modelCatalogStore } = stores;
 
@@ -208,6 +209,173 @@ describe("ControlPanel", () => {
     });
   });
 
+  it("reconciles judge options as the catalog changes", async () => {
+    const user = userEvent.setup();
+    defaultsStore.set({
+      models: [],
+      judge_model: "",
+      limit: 1,
+      max_tokens: 8000,
+      judge_max_tokens: 6000,
+      temperature: 0.2,
+      judge_temperature: 0.0,
+      sleep_s: 0.2,
+      outdir: "results",
+      verbose: false,
+    });
+    modelCatalogStore.set([]);
+
+    render(ControlPanel);
+
+    const judgeSelect = screen.getByLabelText(
+      "Judge model",
+    ) as HTMLSelectElement;
+    await waitFor(() => {
+      expect(judgeSelect.options).toHaveLength(1);
+      expect(judgeSelect.value).toBe("");
+    });
+
+    modelCatalogStore.set([
+      { id: "judge/a", name: "Judge A" },
+      { id: "judge/b", name: "Judge B" },
+    ]);
+    await tick();
+    await waitFor(() => {
+      expect(judgeSelect.options).toHaveLength(2);
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/a", "judge/b"]);
+    });
+
+    modelCatalogStore.set([
+      { id: "judge/b", name: "Judge B" },
+      { id: "judge/a", name: "Judge A" },
+    ]);
+    await tick();
+    await waitFor(() => {
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/b", "judge/a"]);
+    });
+
+    modelCatalogStore.set([
+      { id: "judge/b", name: "Judge B" },
+      { id: "judge/a", name: "Judge A" },
+    ]);
+    await tick();
+    await waitFor(() => {
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/b", "judge/a"]);
+    });
+
+    modelCatalogStore.set([
+      { id: "judge/b", name: "Judge B updated" },
+      { id: "judge/a", name: "Judge A" },
+    ]);
+    await tick();
+    await waitFor(() => {
+      expect(
+        Array.from(judgeSelect.options).map((option) =>
+          option.textContent?.trim(),
+        ),
+      ).toEqual(["Judge B updated", "Judge A"]);
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/b", "judge/a"]);
+    });
+
+    const rotationSequences: ModelInfo[][] = [
+      [
+        { id: "judge/c", name: "Judge C" },
+        { id: "judge/b", name: "Judge B updated" },
+        { id: "judge/a", name: "Judge A" },
+      ],
+      [
+        { id: "judge/a", name: "Judge A" },
+        { id: "judge/c", name: "Judge C" },
+        { id: "judge/b", name: "Judge B updated" },
+      ],
+      [
+        { id: "judge/b", name: "Judge B updated" },
+        { id: "judge/a", name: "Judge A" },
+        { id: "judge/c", name: "Judge C" },
+      ],
+    ];
+
+    for (const sequence of rotationSequences) {
+      modelCatalogStore.set(sequence);
+      await tick();
+      await waitFor(() => {
+        expect(
+          Array.from(judgeSelect.options).map((option) => option.value),
+        ).toEqual(sequence.map((model) => model.id));
+      });
+    }
+
+    const flagsModulePath = resolve(
+      __dirname,
+      "../../../node_modules/svelte/src/internal/flags/index.js",
+    );
+    const flags = await import(pathToFileURL(flagsModulePath).href);
+    flags.enable_async_mode_flag();
+    try {
+      const asyncSequence: ModelInfo[] = [
+        { id: "judge/a", name: "Judge A" },
+        { id: "judge/d", name: "Judge D" },
+        { id: "judge/b", name: "Judge B updated" },
+      ];
+      modelCatalogStore.set(asyncSequence);
+      await tick();
+      await waitFor(() => {
+        expect(
+          Array.from(judgeSelect.options).map((option) => option.value),
+        ).toEqual(asyncSequence.map((model) => model.id));
+      });
+    } finally {
+      flags.disable_async_mode_flag();
+    }
+
+    await user.selectOptions(judgeSelect, "judge/b");
+    expect(judgeSelect.value).toBe("judge/b");
+
+    modelCatalogStore.set([{ id: "judge/b", name: "Judge B" }]);
+    await tick();
+    await waitFor(() => {
+      expect(judgeSelect.options).toHaveLength(1);
+      expect(judgeSelect.value).toBe("judge/b");
+    });
+
+    modelCatalogStore.set([]);
+    await tick();
+    await waitFor(() => {
+      expect(judgeSelect.options).toHaveLength(1);
+      expect(judgeSelect.value).toBe("judge/b");
+      const [onlyOption] = Array.from(judgeSelect.options);
+      expect(onlyOption.value).toBe("judge/b");
+    });
+
+    const catalogWithMissingId = [
+      { name: "Anonymous" } as unknown as ModelInfo,
+    ];
+    modelCatalogStore.set(catalogWithMissingId);
+    await tick();
+    await waitFor(() => {
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/b", ""]);
+      expect(judgeSelect.options[1].textContent).toBe("Anonymous");
+    });
+
+    modelCatalogStore.set([{ name: "Anonymous" } as unknown as ModelInfo]);
+    await tick();
+    await waitFor(() => {
+      expect(
+        Array.from(judgeSelect.options).map((option) => option.value),
+      ).toEqual(["judge/b", ""]);
+    });
+  });
+
   it("falls back to model identifiers when names are missing", async () => {
     defaultsStore.set({
       models: ["orphan"],
@@ -280,6 +448,8 @@ describe("ControlPanel", () => {
     expect(judgeOptionKey({ id: "", name: "" }, 2)).toBe("judge-fallback-2");
     expect(modelCheckboxValue({ id: "abc" })).toBe("abc");
     expect(modelCheckboxValue({ id: "", name: "Readable" })).toBe("Readable");
+    expect(coerceJudgeModelId("judge/a")).toBe("judge/a");
+    expect(coerceJudgeModelId(undefined)).toBe("");
   });
 
   it("handles backend errors for lifecycle actions", async () => {
@@ -366,5 +536,53 @@ describe("ControlPanel", () => {
     statusStore.set({ ...baseStatus, state: undefined as unknown as RunState });
     render(ControlPanel);
     expect(screen.getByText("idle")).toBeInTheDocument();
+  });
+
+  it("renders judge options while async mode defers appends", async () => {
+    const flagsModulePath = resolve(
+      __dirname,
+      "../../../node_modules/svelte/src/internal/flags/index.js",
+    );
+    const flags = await import(pathToFileURL(flagsModulePath).href);
+    flags.enable_async_mode_flag();
+    try {
+      modelCatalogStore.set([
+        { id: "judge/a", name: "Judge A" },
+        { id: "judge/b", name: "Judge B" },
+      ]);
+      const AsyncControlPanel = (
+        (await import(
+          /* @vite-ignore */ "./ControlPanel.svelte?async-render"
+        )) as unknown as { default: typeof ControlPanel }
+      ).default;
+      const { unmount } = render(AsyncControlPanel);
+      await waitFor(() => {
+        expect(screen.getByLabelText("Judge model")).toBeInTheDocument();
+      });
+      unmount();
+    } finally {
+      flags.disable_async_mode_flag();
+    }
+  });
+
+  it("manually exercises the deferred append branch", async () => {
+    const base = "../../../node_modules/svelte/src/internal";
+    const load = async (rel: string) =>
+      import(pathToFileURL(resolve(__dirname, `${base}/${rel}`)).href);
+
+    const flags = await load("flags/index.js");
+    const runtime = await load("client/runtime.js");
+    const constants = await load("client/constants.js");
+    const operations = await load("client/dom/operations.js");
+
+    flags.enable_async_mode_flag();
+    try {
+      const previousEffect = runtime.active_effect;
+      runtime.set_active_effect({ f: constants.EFFECT_RAN });
+      expect(operations.should_defer_append()).toBe(true);
+      runtime.set_active_effect(previousEffect);
+    } finally {
+      flags.disable_async_mode_flag();
+    }
   });
 });
