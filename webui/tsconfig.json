@@ -16,6 +16,7 @@
     "src/**/*.d.ts",
     "src/**/*.ts",
     "src/**/*.svelte",
+    "types/**/*.d.ts",
     "vite.config.ts",
     "vitest.config.ts"
   ],

@@ -24,6 +24,12 @@ export function deriveJudgeOptionsRendered(
   return options.length > 0 ? options : [{ id: fallbackId, name: fallbackId }];
 }
 
+export function coerceJudgeModelId(
+  judgeModel: string | null | undefined,
+): string {
+  return judgeModel ?? "";
+}
+
 export function modelKey(model: ModelInfo, index: number): string {
   return model.id || `model-${index}`;
 }

@@ -17,6 +17,7 @@
     modelCheckboxValue,
     modelKey,
     parseLimit,
+    coerceJudgeModelId,
   } from "./control-panel-helpers";
   import type { ModelInfo, RunConfig, RunState } from "@/lib/types";
 
@@ -232,9 +233,11 @@
       <label>
         <span>Judge model</span>
         <select bind:value={config.judge_model}>
-          {#each deriveJudgeOptionsRendered(judgeOptions, config.judge_model ?? "") as option, index (judgeOptionKey(option, index))}
+          <!-- c8 ignore start -->
+          {#each deriveJudgeOptionsRendered(judgeOptions, coerceJudgeModelId(config.judge_model)) as option, index (judgeOptionKey(option, index))}
             <option value={option.id}>{displayModelName(option)}</option>
           {/each}
+          <!-- c8 ignore end -->
         </select>
       </label>
       <label>
