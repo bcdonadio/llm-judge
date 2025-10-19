@@ -219,7 +219,8 @@ def test_serve_frontend_missing_dist(tmp_path: Path) -> None:
     assert response.status_code == 503
     payload = response.json()
     assert isinstance(payload, dict)
-    assert payload["error"] == "Frontend assets not found."
+    assert payload["detail"] == "Frontend assets not found."
+    assert payload["hint"] == "Run `npm install && npm run build` inside webui/."
 
 
 def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
@@ -228,6 +229,11 @@ def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
     (dist_dir / "assets").mkdir()  # FastAPI requires assets subdirectory
     (dist_dir / "index.html").write_text("<html>ok</html>")
     (dist_dir / "bundle.js").write_text("console.log('hi')")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    symlink_target = dist_dir / "link"
+    symlink_target.symlink_to(outside, target_is_directory=True)
 
     app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
     client = TestClient(app)
@@ -250,6 +256,10 @@ def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
     absolute = client.get("/%2Fetc/passwd")
     assert absolute.status_code == 400
     assert absolute.json()["detail"] == "Invalid path"
+
+    symlink = client.get("/link/secret.txt")
+    assert symlink.status_code == 400
+    assert symlink.json()["detail"] == "Invalid path"
 
     fallback = client.get("/")
     assert fallback.status_code == 200
@@ -551,6 +561,23 @@ def test_websocket_endpoint_handles_disconnect(tmp_path: Path) -> None:
 
     setattr(websocket_manager, "_send_event", original_send_event)
     setattr(websocket_manager, "disconnect", original_disconnect)
+
+
+def test_serve_frontend_request_handles_missing_raw_path(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()
+    (dist_dir / "index.html").write_text("<html>ok</html>")
+
+    serve_frontend_request = getattr(webapp_module, "_serve_frontend_request")
+    response = serve_frontend_request(dist_dir, "index.html", None)
+    assert getattr(response, "status_code", 200) == 200
+
+
+def test_normalise_raw_path_non_bytes() -> None:
+    normalise_raw_path = getattr(webapp_module, "_normalise_raw_path")
+    assert normalise_raw_path("not-bytes") is None
+    assert normalise_raw_path(bytearray(b"/path")) == b"/path"
 
 
 class DummyManager:

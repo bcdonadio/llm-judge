@@ -7,9 +7,10 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, cast
-from fastapi import FastAPI, HTTPException, Request, WebSocket, status
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -81,7 +82,25 @@ class ActionResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Response model for errors."""
 
-    error: str
+    detail: str
+    hint: Optional[str] = None
+
+
+def _invalid_path_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content=ErrorResponse(detail="Invalid path").model_dump(),
+    )
+
+
+def _missing_frontend_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=ErrorResponse(
+            detail="Frontend assets not found.",
+            hint="Run `npm install && npm run build` inside webui/.",
+        ).model_dump(exclude_none=True),
+    )
 
 
 def _load_dotenv(env_path: Path) -> None:
@@ -384,12 +403,13 @@ def _register_frontend_missing_route(app: FastAPI) -> None:
     @app.get("/", include_in_schema=False)
     async def frontend_missing() -> JSONResponse:
         """Fallback when frontend is not built."""
+        payload = ErrorResponse(
+            detail="Frontend assets not found.",
+            hint="Run `npm install && npm run build` inside webui/.",
+        )
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "error": "Frontend assets not found.",
-                "hint": "Run `npm install && npm run build` inside webui/.",
-            },
+            content=payload.model_dump(exclude_none=True),
         )
 
 
@@ -399,35 +419,70 @@ def _mount_frontend_assets(app: FastAPI, dist_dir: Path) -> None:
     app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
 
 
+def _contains_encoded_traversal(raw_path: Optional[bytes]) -> bool:
+    if not raw_path:
+        return False
+    lower = raw_path.lower()
+    traversal_markers = (b"/../", b"..%2f", b"%2f..", b"%2e%2e")
+    return any(marker in lower for marker in traversal_markers)
+
+
+def _decode_frontend_path(full_path: str) -> Optional[str]:
+    decoded = unquote(full_path)
+    if decoded.startswith("/"):
+        return None
+    return decoded
+
+
+def _is_traversal_path(decoded_path: str) -> bool:
+    return ".." in PurePosixPath(decoded_path).parts
+
+
+def _resolve_safe_path(dist_dir: Path, decoded_path: str) -> Optional[Path]:
+    candidate = (dist_dir / decoded_path).resolve()
+    try:
+        candidate.relative_to(dist_dir)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _normalise_raw_path(raw_path: Any) -> Optional[bytes]:
+    if isinstance(raw_path, bytearray):
+        return bytes(raw_path)
+    if isinstance(raw_path, bytes):
+        return raw_path
+    return None
+
+
+def _serve_frontend_request(dist_dir: Path, full_path: str, raw_path: Optional[bytes]) -> Response:
+    if _contains_encoded_traversal(raw_path):
+        return _invalid_path_response()
+
+    decoded_path = _decode_frontend_path(full_path)
+    if decoded_path is None or _is_traversal_path(decoded_path):
+        return _invalid_path_response()
+
+    requested_path = _resolve_safe_path(dist_dir, decoded_path)
+    if requested_path is None:
+        return _invalid_path_response()
+
+    if requested_path.is_file():
+        return FileResponse(requested_path)
+
+    index_path = dist_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+
+    return _missing_frontend_response()
+
+
 def _register_frontend_handler(app: FastAPI, dist_dir: Path) -> None:
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_frontend(full_path: str, request: Request) -> FileResponse:
+    async def serve_frontend(full_path: str, request: Request) -> Response:
         """Serve frontend files with SPA fallback to index.html."""
-        raw_path = request.scope.get("raw_path", b"")
-        raw_path_lower = raw_path.lower() if isinstance(raw_path, (bytes, bytearray)) else b""
-        if b"/../" in raw_path_lower or b"..%2f" in raw_path_lower:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
-
-        if ".." in PurePosixPath(full_path).parts:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
-
-        requested_path = (dist_dir / full_path).resolve()
-        try:
-            requested_path.relative_to(dist_dir)
-        except ValueError:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
-
-        if requested_path.is_file():
-            return FileResponse(requested_path)
-
-        index_path = dist_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(index_path)
-
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Frontend assets not found. Run `npm install && npm run build` inside webui/.",
-        )
+        raw_path = _normalise_raw_path(request.scope.get("raw_path", b""))
+        return _serve_frontend_request(dist_dir, full_path, raw_path)
 
 
 def create_app(
