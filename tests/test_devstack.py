@@ -341,9 +341,8 @@ def test_serve_backend_exit(base_config: devstack.DevStackConfig, monkeypatch: p
     assert host_arg == base_config.backend_host
     port_arg = backend_cmd[backend_cmd.index("--port") + 1]
     assert port_arg == str(base_config.backend_port)
-    # Check for workers argument
-    workers_arg = backend_cmd[backend_cmd.index("--workers") + 1]
-    assert workers_arg == str(base_config.uvicorn_workers)
+    # Reload mode should not request multiple workers
+    assert "--workers" not in backend_cmd
 
 
 def test_serve_frontend_exit(base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch) -> None:

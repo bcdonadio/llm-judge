@@ -151,10 +151,13 @@ def _launch_dev_servers(
         config.backend_host,
         "--port",
         str(config.backend_port),
-        "--workers",
-        str(config.uvicorn_workers),
-        "--reload",
     ]
+    reload_enabled = True
+    if not reload_enabled and config.uvicorn_workers > 0:
+        backend_cmd.extend(["--workers", str(config.uvicorn_workers)])
+    if reload_enabled:
+        backend_cmd.append("--reload")
+
     frontend_cmd = [
         config.npm_command,
         "run",
