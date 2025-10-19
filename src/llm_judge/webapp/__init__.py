@@ -10,11 +10,13 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, cast
+
+import yaml
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from .job_manager import JobManager
 from .websocket import WebSocketManager
@@ -103,102 +105,153 @@ def _missing_frontend_response() -> JSONResponse:
     )
 
 
-def _load_dotenv(env_path: Path) -> None:
-    """Load key=value pairs from a dotenv file without overriding existing values."""
-    if not env_path.is_file():
-        return
-
-    if _load_dotenv_with_library(env_path):
-        return
-
-    _load_dotenv_manual(env_path)
+class ListenerEndpoint(BaseModel):
+    host: str
+    port: int = Field(ge=0)
 
 
-def _load_dotenv_with_library(env_path: Path) -> bool:
-    """Load dotenv via python-dotenv if available. Return True on success."""
+class ListenSettings(BaseModel):
+    frontend: ListenerEndpoint
+    proxy: ListenerEndpoint
+
+
+class InferenceSettings(BaseModel):
+    endpoint: str
+    key: str
+
+
+class RetrySettings(BaseModel):
+    max: int = Field(ge=0)
+    timeout: int = Field(gt=0)
+
+
+class DefaultRunSettings(BaseModel):
+    max_rounds: int = Field(gt=0)
+    judge: str
+    models: List[str] = Field(min_length=1)
+
+
+class ApplicationSettings(BaseModel):
+    listen: ListenSettings
+    inference: InferenceSettings
+    retries: RetrySettings
+    log_level: str
+    defaults: DefaultRunSettings
+
+
+def _load_yaml_config(config_path: Path) -> ApplicationSettings:
+    if not config_path.is_file():
+        raise RuntimeError(f"Configuration file not found: {config_path}")
+
     try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return False
-    load_dotenv(env_path, override=False)
-    return True
+        with config_path.open("r", encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle)
+    except yaml.YAMLError as exc:  # pragma: no cover - yaml error formatting
+        raise RuntimeError(f"Failed to parse configuration file: {config_path}") from exc
+
+    if not isinstance(loaded, dict):
+        raise RuntimeError("Configuration must be a mapping of keys to values")
+
+    config_data = cast(Dict[str, Any], loaded)
+    try:
+        return ApplicationSettings(**config_data)
+    except ValidationError as exc:  # pragma: no cover - delegated validation details
+        raise RuntimeError(f"Invalid configuration file: {config_path}") from exc
 
 
-def _load_dotenv_manual(env_path: Path) -> None:
-    """Minimal .env parser for environments without python-dotenv installed."""
-    for raw_line in env_path.read_text().splitlines():
-        parsed = _parse_env_line(raw_line)
-        if not parsed:
-            continue
-        key, value = parsed
-        if key in os.environ:
-            continue
-        os.environ[key] = value
+def _configure_logging_level(level_name: str) -> None:
+    numeric_level = getattr(logging, level_name.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise RuntimeError(f"Invalid log level specified in configuration: {level_name}")
+    logging.getLogger().setLevel(numeric_level)
 
 
-def _parse_env_line(raw_line: str) -> Optional[Tuple[str, str]]:
-    """Parse a single dotenv line into a key/value pair."""
-    line = raw_line.strip()
-    if not line or line.startswith("#"):
+def _settings_to_app_config(settings: ApplicationSettings) -> Dict[str, Any]:
+    return {
+        "OPENROUTER_BASE_URL": settings.inference.endpoint,
+        "OPENROUTER_TIMEOUT": settings.retries.timeout,
+        "OPENROUTER_MAX_RETRIES": settings.retries.max,
+        "DEFAULT_MODELS": list(settings.defaults.models),
+        "DEFAULT_JUDGE_MODEL": settings.defaults.judge,
+        "DEFAULT_LIMIT": settings.defaults.max_rounds,
+        "LISTEN_FRONTEND_HOST": settings.listen.frontend.host,
+        "LISTEN_FRONTEND_PORT": settings.listen.frontend.port,
+        "LISTEN_PROXY_HOST": settings.listen.proxy.host,
+        "LISTEN_PROXY_PORT": settings.listen.proxy.port,
+    }
+
+
+def _settings_to_job_defaults(settings: ApplicationSettings) -> Dict[str, Any]:
+    return {
+        "models": list(settings.defaults.models),
+        "judge_model": settings.defaults.judge,
+        "limit": settings.defaults.max_rounds,
+    }
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
         return None
-    if line.startswith("export "):
-        line = line[len("export ") :].strip()
-    if "=" not in line:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
-    key, value = line.split("=", 1)
-    key = key.strip()
-    if not key:
-        return None
 
-    value = _strip_inline_comment(_strip_quotes(value.strip()))
-    return key, value
+def _coerce_model_list(value: Any, fallback: List[str]) -> List[str]:
+    if isinstance(value, list):
+        return [str(model) for model in value]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]
+    return list(fallback)
 
 
-def _strip_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
+def _resolve_api_client(
+    container: Optional[ServiceContainerType],
+    *,
+    base_url: str,
+    timeout: Optional[int],
+    max_retries: Optional[int],
+) -> Tuple[Optional[IAPIClient], bool]:
+    if container is not None and has_di_support:
+        try:
+            resolved_client = container.resolve(IAPIClient)
+            return cast(IAPIClient, resolved_client), False
+        except Exception:  # pragma: no cover - defensive
+            pass
 
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return None, False
 
-def _strip_inline_comment(value: str) -> str:
-    if "#" not in value:
-        return value
-    for idx, char in enumerate(value):
-        if char != "#":
-            continue
-        if idx == 0 or value[idx - 1].isspace():
-            return value[:idx].rstrip()
-    return value
+    from ..infrastructure.api_client import OpenRouterClient
+
+    client_kwargs: Dict[str, Any] = {}
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
+    if max_retries is not None:
+        client_kwargs["max_retries"] = max_retries
+
+    client = OpenRouterClient(api_key=api_key, base_url=base_url, **client_kwargs)
+    return client, True
 
 
 def _load_supported_models(
     container: Optional[ServiceContainerType],
     *,
     base_url: str,
+    timeout: Optional[int] = None,
+    max_retries: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     logger = logging.getLogger(__name__)
-    api_client: IAPIClient | None = None
-    close_client = False
-
-    if container is not None and has_di_support:
-        try:
-            resolved_client = container.resolve(IAPIClient)
-            api_client = cast(IAPIClient, resolved_client)
-        except Exception:  # pragma: no cover - defensive
-            api_client = None
+    api_client, close_client = _resolve_api_client(
+        container,
+        base_url=base_url,
+        timeout=timeout,
+        max_retries=max_retries,
+    )
 
     if api_client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            logger.info("Skipping OpenRouter model preload: OPENROUTER_API_KEY not configured.")
-            return []
-        from ..infrastructure.api_client import OpenRouterClient
-
-        api_client = OpenRouterClient(api_key=api_key, base_url=base_url)
-        close_client = True
-
-    assert api_client is not None
+        logger.info("Skipping OpenRouter model preload: OPENROUTER_API_KEY not configured.")
+        return []
 
     try:
         models = api_client.list_models()
@@ -505,13 +558,24 @@ def create_app(
         version="1.0.0",
     )
 
-    # Load environment variables
+    # Load configuration settings
     project_root = Path(__file__).resolve().parents[3]
-    _load_dotenv(project_root / ".env")
+    settings_path = project_root / "config.yaml"
+    settings = _load_yaml_config(settings_path)
+    _configure_logging_level(settings.log_level)
+
+    if not os.getenv("OPENROUTER_API_KEY"):
+        os.environ["OPENROUTER_API_KEY"] = settings.inference.key
+
     frontend_dist = project_root / "webui" / "dist"
 
+    base_config = _settings_to_app_config(settings)
+    merged_config = dict(base_config)
+    if config:
+        merged_config.update(config)
+
     # Configure application
-    app_config, openrouter_base_url, outdir_path = _setup_app_config(frontend_dist, config)
+    app_config, openrouter_base_url, outdir_path = _setup_app_config(frontend_dist, merged_config)
     runner_factory_fn = _setup_runner_factory(container)
     websocket_manager = _setup_websocket_manager()
 
@@ -519,17 +583,34 @@ def create_app(
     if container is not None:
         app.state.service_container = container
 
+    default_models_value = app_config.get("DEFAULT_MODELS", settings.defaults.models)
+    models_list = _coerce_model_list(default_models_value, settings.defaults.models)
+    limit_value = _coerce_int(app_config.get("DEFAULT_LIMIT")) or settings.defaults.max_rounds
+    judge_value = app_config.get("DEFAULT_JUDGE_MODEL", settings.defaults.judge) or settings.defaults.judge
+
+    job_defaults: Dict[str, Any] = _settings_to_job_defaults(settings)
+    job_defaults["models"] = models_list
+    job_defaults["judge_model"] = judge_value
+    job_defaults["limit"] = limit_value
+
     # Create JobManager
     if runner_factory_fn is not None:
-        manager = JobManager(outdir=outdir_path, runner_factory=runner_factory_fn)
+        manager = JobManager(outdir=outdir_path, runner_factory=runner_factory_fn, defaults=job_defaults)
     else:
-        manager = JobManager(outdir=outdir_path)
+        manager = JobManager(outdir=outdir_path, defaults=job_defaults)
 
     # Connect WebSocket manager to JobManager for event broadcasting
     manager.set_websocket_manager(websocket_manager)
 
     # Load and configure models
-    models_catalog = _load_supported_models(container, base_url=openrouter_base_url)
+    timeout_arg = _coerce_int(app_config.get("OPENROUTER_TIMEOUT"))
+    retries_arg = _coerce_int(app_config.get("OPENROUTER_MAX_RETRIES"))
+    models_catalog = _load_supported_models(
+        container,
+        base_url=openrouter_base_url,
+        timeout=timeout_arg,
+        max_retries=retries_arg,
+    )
     manager.set_supported_models(models_catalog)
     app_config["OPENROUTER_MODELS"] = models_catalog
 
@@ -537,6 +618,7 @@ def create_app(
     app.state.job_manager = manager
     app.state.websocket_manager = websocket_manager
     app.state.config = app_config
+    app.state.settings = settings
     outdir_str = str(manager.outdir)
     logging.getLogger(__name__).info("[Artifacts] Using output directory: %s", outdir_str)
 

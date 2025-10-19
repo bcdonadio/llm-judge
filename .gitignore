@@ -3,6 +3,9 @@
 .venv
 .python-version
 
+# Config files
+config.yaml
+
 # Editor settings
 .vscode/
 

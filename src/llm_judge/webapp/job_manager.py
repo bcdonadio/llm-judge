@@ -60,6 +60,7 @@ class JobManager:
         *,
         outdir: Path | None = None,
         runner_factory: RunnerFactory | None = None,
+        defaults: Dict[str, Any] | None = None,
         history_limit: int = 500,
     ) -> None:
         self._lock = RLock()
@@ -68,6 +69,7 @@ class JobManager:
         self._outdir.mkdir(parents=True, exist_ok=True)
         self._runner_factory = runner_factory or self._default_runner_factory
         self._history_limit = history_limit
+        self._defaults = self._build_defaults(defaults)
 
         self._websocket_manager: Any | None = None
         self._thread: Any | None = None
@@ -186,17 +188,10 @@ class JobManager:
         }
 
     def defaults(self) -> Dict[str, Any]:
-        return {
-            "models": ["qwen/qwen3-next-80b-a3b-instruct"],
-            "judge_model": "x-ai/grok-4-fast",
-            "limit": 1,
-            "max_tokens": 8000,
-            "judge_max_tokens": 6000,
-            "temperature": 0.2,
-            "judge_temperature": 0.0,
-            "sleep_s": 0.2,
-            "outdir": str(self._outdir),
-        }
+        with self._lock:
+            defaults_copy = copy.deepcopy(self._defaults)
+            defaults_copy["outdir"] = str(self._outdir)
+            return defaults_copy
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -261,6 +256,27 @@ class JobManager:
         self._publish_event(event_dict)
         if publish_status:
             self._publish_event(self._status_event())
+
+    def _build_defaults(self, overrides: Dict[str, Any] | None) -> Dict[str, Any]:
+        base_defaults = {
+            "models": ["qwen/qwen3-next-80b-a3b-instruct"],
+            "judge_model": "x-ai/grok-4-fast",
+            "limit": 1,
+            "max_tokens": 8000,
+            "judge_max_tokens": 6000,
+            "temperature": 0.2,
+            "judge_temperature": 0.0,
+            "sleep_s": 0.2,
+            "outdir": str(self._outdir),
+        }
+
+        if overrides:
+            for key, value in overrides.items():
+                if value is None:
+                    continue
+                base_defaults[key] = value
+
+        return base_defaults
 
     def _append_history(self, event: Dict[str, Any]) -> None:
         with self._lock:

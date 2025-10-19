@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import signal
 import subprocess
@@ -217,6 +218,92 @@ def test_terminate_process_graceful(tmp_path: Path) -> None:
     logger.close()
     assert proc.terminate_called
     assert proc.wait_calls == 1
+
+
+def test_launch_dev_servers_adds_worker_flag(
+    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_config.uvicorn_workers = 3
+    recorded: Dict[str, Any] = {}
+
+    class DummyPopen:
+        _counter = 0
+
+        def __init__(
+            self, cmd: List[str], cwd: Path, env: Dict[str, str] | None = None, stdout: Any = None, stderr: Any = None
+        ) -> None:  # noqa: D401
+            DummyPopen._counter += 1
+            self.pid = 1000 + DummyPopen._counter
+            if "uvicorn" in cmd:
+                recorded["backend_cmd"] = list(cmd)
+                recorded["backend_env"] = dict(env or {})
+                recorded["backend_cwd"] = cwd
+            else:
+                recorded["frontend_cmd"] = list(cmd)
+                recorded["frontend_cwd"] = cwd
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(devstack.subprocess, "Popen", DummyPopen)
+
+    backend_env = {"PYTHONUNBUFFERED": "1"}
+    controller = make_logger(base_config.controller_log)
+    backend_log = io.StringIO()
+    frontend_log = io.StringIO()
+
+    devstack._launch_dev_servers(  # pyright: ignore[reportPrivateUsage]
+        base_config,
+        backend_env,
+        backend_log,
+        frontend_log,
+        controller,
+    )
+    controller.close()
+
+    backend_cmd = recorded["backend_cmd"]
+    assert "--workers" in backend_cmd
+    assert "--reload" not in backend_cmd
+
+
+def test_launch_dev_servers_enables_reload_for_single_worker(
+    base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base_config.uvicorn_workers = 1
+    recorded: Dict[str, Any] = {}
+
+    class DummyPopen:
+        _counter = 0
+
+        def __init__(
+            self, cmd: List[str], cwd: Path, env: Dict[str, str] | None = None, stdout: Any = None, stderr: Any = None
+        ) -> None:  # noqa: D401
+            DummyPopen._counter += 1
+            self.pid = 2000 + DummyPopen._counter
+            if "uvicorn" in cmd:
+                recorded["backend_cmd"] = list(cmd)
+            else:
+                recorded["frontend_cmd"] = list(cmd)
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(devstack.subprocess, "Popen", DummyPopen)
+
+    backend_env = {"PYTHONUNBUFFERED": "1"}
+    controller = make_logger(base_config.controller_log)
+    devstack._launch_dev_servers(  # pyright: ignore[reportPrivateUsage]
+        base_config,
+        backend_env,
+        io.StringIO(),
+        io.StringIO(),
+        controller,
+    )
+    controller.close()
+
+    backend_cmd = recorded["backend_cmd"]
+    assert "--reload" in backend_cmd
+    assert "--workers" not in backend_cmd
 
 
 def test_terminate_process_force_kill(tmp_path: Path) -> None:

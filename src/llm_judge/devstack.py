@@ -152,8 +152,8 @@ def _launch_dev_servers(
         "--port",
         str(config.backend_port),
     ]
-    reload_enabled = True
-    if not reload_enabled and config.uvicorn_workers > 0:
+    reload_enabled = config.uvicorn_workers <= 1
+    if config.uvicorn_workers > 1:
         backend_cmd.extend(["--workers", str(config.uvicorn_workers)])
     if reload_enabled:
         backend_cmd.append("--reload")

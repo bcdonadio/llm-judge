@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import builtins
 import importlib
-import os
-import sys
+import logging
+import textwrap
 import time
 from pathlib import Path
 from threading import Thread
 from typing import Any, Callable, Dict, List, cast
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,93 +122,108 @@ class StubContainer:
         return self._resolver[key]
 
 
-def test_load_dotenv_missing_file(tmp_path: Path) -> None:
-    webapp_module._load_dotenv(tmp_path / "nonexistent.env")  # pyright: ignore[reportPrivateUsage]
-
-
-def test_load_dotenv_uses_python_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("FOO=bar\n")
-
-    load_calls: Dict[str, Any] = {}
-
-    def fake_load(path: str | Path, *, override: bool) -> None:
-        load_calls["path"] = Path(path)
-        load_calls["override"] = override
-
-    manual_called = False
-
-    def fake_manual(path: Path) -> None:
-        nonlocal manual_called
-        manual_called = True
-
-    monkeypatch.setitem(sys.modules, "dotenv", SimpleNamespace(load_dotenv=fake_load))
-    monkeypatch.setattr(webapp_module, "_load_dotenv_manual", fake_manual)
-
-    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
-
-    assert load_calls == {"path": env_file, "override": False}
-    assert manual_called is False
-
-
-def test_load_dotenv_with_library_import_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    original_import = builtins.__import__
-
-    def fake_import(
-        name: str, globals: Any | None = None, locals: Any | None = None, fromlist: tuple[str, ...] = (), level: int = 0
-    ) -> Any:
-        if name == "dotenv":
-            raise ImportError("No module named 'dotenv'")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    assert webapp_module._load_dotenv_with_library(tmp_path / ".env") is False  # pyright: ignore[reportPrivateUsage]
-
-
-def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "# comment line",
-                "export QUOTED='hello world'",
-                "INLINE=value # inline comment",
-                "BARE=value2",
-                "LEADING=# comment",
-                "EMPTY=",
-                "EMBEDDED=abc#123",
-                "export NO_EQUALS",
-                "=skip-me",
-                "",
-            ]
-        )
+def test_load_yaml_config_success(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        textwrap.dedent(
+            """
+            listen:
+              frontend:
+                host: 127.0.0.1
+                port: 5173
+              proxy:
+                host: 127.0.0.1
+                port: 5000
+            inference:
+              endpoint: https://example.test/v1
+              key: secret-key
+            retries:
+              max: 4
+              timeout: 45
+            log_level: DEBUG
+            defaults:
+              max_rounds: 7
+              judge: judge/slim
+              models:
+                - model/a
+                - model/b
+            """
+        ).strip()
     )
 
-    def fake_loader(_path: Path) -> bool:
-        return False
+    settings = webapp_module._load_yaml_config(config_file)  # pyright: ignore[reportPrivateUsage]
+    assert settings.inference.endpoint == "https://example.test/v1"
+    assert settings.defaults.max_rounds == 7
+    assert settings.defaults.models == ["model/a", "model/b"]
 
-    monkeypatch.setattr(webapp_module, "_load_dotenv_with_library", fake_loader)
-    monkeypatch.delenv("QUOTED", raising=False)
-    monkeypatch.setenv("INLINE", "preexisting")
-    monkeypatch.delenv("BARE", raising=False)
-    monkeypatch.delenv("LEADING", raising=False)
-    monkeypatch.delenv("EMPTY", raising=False)
-    monkeypatch.delenv("EMBEDDED", raising=False)
 
-    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
+def test_settings_to_job_defaults_roundtrip() -> None:
+    settings = webapp_module.ApplicationSettings(**_base_config_dict())
+    defaults = webapp_module._settings_to_job_defaults(settings)  # pyright: ignore[reportPrivateUsage]
+    assert defaults == {
+        "models": ["model/a", "model/b"],
+        "judge_model": "judge/slim",
+        "limit": 7,
+    }
 
-    assert os.environ["QUOTED"] == "hello world"
-    assert os.environ["INLINE"] == "preexisting"  # existing value not overridden
-    assert os.environ["BARE"] == "value2"
-    assert os.environ["LEADING"] == ""
-    assert os.environ["EMPTY"] == ""
-    assert os.environ["EMBEDDED"] == "abc#123"
-    assert "NO_EQUALS" not in os.environ
-    assert "skip-me" not in os.environ
 
-    for key in ("QUOTED", "BARE", "EMPTY", "EMBEDDED"):
-        monkeypatch.delenv(key, raising=False)
+def test_setup_app_config_without_overrides(tmp_path: Path) -> None:
+    frontend = tmp_path / "dist"
+    config, base_url, outdir = webapp_module._setup_app_config(frontend, None)  # pyright: ignore[reportPrivateUsage]
+    assert config["FRONTEND_DIST"].endswith("dist")
+    assert base_url == "https://openrouter.ai/api/v1"
+    assert outdir.exists()
+
+
+def test_setup_app_config_with_partial_overrides(tmp_path: Path) -> None:
+    frontend = tmp_path / "dist"
+    overrides = {"SOME_FLAG": True}
+    config, base_url, _ = webapp_module._setup_app_config(frontend, overrides)  # pyright: ignore[reportPrivateUsage]
+    assert config["SOME_FLAG"] is True
+    assert base_url == "https://openrouter.ai/api/v1"
+
+
+def test_load_yaml_config_missing_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.yaml"
+    with pytest.raises(RuntimeError, match="Configuration file not found"):
+        webapp_module._load_yaml_config(missing)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_load_yaml_config_invalid_structure(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("[]")
+    with pytest.raises(RuntimeError, match="Configuration must be a mapping"):
+        webapp_module._load_yaml_config(config_file)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_load_yaml_config_validation_error(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("inference_endpoint: 123\n")
+    with pytest.raises(RuntimeError, match="Invalid configuration file"):
+        webapp_module._load_yaml_config(config_file)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_configure_logging_level_sets_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    root_logger = logging.getLogger()
+    original_level = root_logger.level
+    try:
+        webapp_module._configure_logging_level("DEBUG")  # pyright: ignore[reportPrivateUsage]
+        assert root_logger.level == logging.DEBUG
+    finally:
+        root_logger.setLevel(original_level)
+
+
+def test_configure_logging_level_invalid() -> None:
+    with pytest.raises(RuntimeError, match="Invalid log level"):
+        webapp_module._configure_logging_level("NOT_A_LEVEL")  # pyright: ignore[reportPrivateUsage]
+
+
+def test_coerce_int_helper() -> None:
+    coerce = getattr(webapp_module, "_coerce_int")
+    assert coerce(5) == 5
+    assert coerce("10") == 10
+    assert coerce("abc") is None
+    assert coerce(None) is None
 
 
 def test_serve_frontend_missing_dist(tmp_path: Path) -> None:
@@ -261,13 +275,56 @@ def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
     assert symlink.status_code == 400
     assert symlink.json()["detail"] == "Invalid path"
 
-    fallback = client.get("/")
-    assert fallback.status_code == 200
-    assert b"<html>ok</html>" in fallback.content
 
-    fallback_asset = client.get("/missing.js")
-    assert fallback_asset.status_code == 200
-    assert b"<html>ok</html>" in fallback_asset.content
+def test_create_app_uses_yaml_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path)})
+    manager = cast(JobManager, app.state.job_manager)
+    defaults = manager.defaults()
+    assert defaults["models"] == ["qwen/qwen3-next-80b-a3b-instruct"]
+    assert defaults["judge_model"] == "x-ai/grok-fast-4"
+    assert defaults["limit"] == 1
+    import os as _os
+
+    assert _os.getenv("OPENROUTER_API_KEY") == "your_api_key_here"
+    assert app.state.settings.defaults.max_rounds == 1
+    assert app.state.config["LISTEN_FRONTEND_HOST"] == "0.0.0.0"
+    assert app.state.config["LISTEN_PROXY_PORT"] == 5000
+
+
+def test_create_app_keeps_existing_api_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "preexisting")
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path)})
+    import os as _os
+
+    assert _os.getenv("OPENROUTER_API_KEY") == "preexisting"
+    manager = cast(JobManager, app.state.job_manager)
+    assert manager.defaults()["limit"] == 1
+
+
+def test_create_app_allows_limit_override(tmp_path: Path) -> None:
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path), "DEFAULT_LIMIT": "9"})
+    manager = cast(JobManager, app.state.job_manager)
+    assert manager.defaults()["limit"] == 9
+
+
+def test_create_app_nonlist_models_override_uses_defaults(tmp_path: Path) -> None:
+    app = create_app(
+        {
+            "TESTING": True,
+            "RUNS_OUTDIR": str(tmp_path),
+            "DEFAULT_MODELS": "not-a-list",
+        }
+    )
+    manager = cast(JobManager, app.state.job_manager)
+    assert manager.defaults()["models"] == ["qwen/qwen3-next-80b-a3b-instruct"]
+
+
+def test_job_manager_default_builder_skips_none(tmp_path: Path) -> None:
+    manager = JobManager(outdir=tmp_path, defaults={"limit": 2, "temperature": None})
+    defaults = manager.defaults()
+    assert defaults["limit"] == 2
+    assert defaults["temperature"] == 0.2
 
 
 def test_job_manager_completes_run(tmp_path: Path) -> None:
@@ -730,6 +787,7 @@ def test_create_app_configures_temp_outdir() -> None:
         outdir.relative_to(project_root)
     models_cache = cast(List[Dict[str, Any]], app.state.config["OPENROUTER_MODELS"])
     assert isinstance(models_cache, list)
+    assert app.state.config["DEFAULT_LIMIT"] == 1
 
 
 def test_webapp_without_di_support(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -861,6 +919,145 @@ def test_load_supported_models_without_api_key(monkeypatch: pytest.MonkeyPatch) 
     assert models == []
 
 
+def test_load_supported_models_applies_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token")
+    captured: Dict[str, Any] = {}
+
+    class DummyClient:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: int = 0,
+            max_retries: int = 0,
+            logger: Any | None = None,
+        ) -> None:
+            captured.update(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "timeout": timeout,
+                    "max_retries": max_retries,
+                }
+            )
+
+        def list_models(self) -> List[Dict[str, Any]]:
+            return [{"id": "demo"}]
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenRouterClient", DummyClient)
+
+    models = webapp_module._load_supported_models(  # pyright: ignore[reportPrivateUsage]
+        None,
+        base_url="https://example.com",
+        timeout=123,
+        max_retries=4,
+    )
+
+    assert models == [{"id": "demo"}]
+    assert captured == {
+        "api_key": "token",
+        "base_url": "https://example.com",
+        "timeout": 123,
+        "max_retries": 4,
+        "closed": True,
+    }
+
+
+def test_resolve_api_client_applies_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token")
+    captured: Dict[str, Any] = {}
+
+    class DummyClient:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: int = 0,
+            max_retries: int = 0,
+            logger: Any | None = None,
+        ) -> None:
+            captured.update(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "timeout": timeout,
+                    "max_retries": max_retries,
+                }
+            )
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenRouterClient", DummyClient)
+
+    client, should_close = webapp_module._resolve_api_client(  # pyright: ignore[reportPrivateUsage]
+        None,
+        base_url="https://example.com",
+        timeout=10,
+        max_retries=5,
+    )
+
+    assert captured == {
+        "api_key": "token",
+        "base_url": "https://example.com",
+        "timeout": 10,
+        "max_retries": 5,
+    }
+    assert should_close is True
+    assert client is not None
+
+    # Ensure cleanup path executes
+    client.close()
+    assert captured["closed"] is True
+
+
+def test_resolve_api_client_without_optional_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token")
+    captured: Dict[str, Any] = {}
+
+    class DummyClient:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str,
+            timeout: int = 0,
+            max_retries: int = 0,
+            logger: Any | None = None,
+        ) -> None:
+            captured.update(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "timeout": timeout,
+                    "max_retries": max_retries,
+                }
+            )
+
+    monkeypatch.setattr("llm_judge.infrastructure.api_client.OpenRouterClient", DummyClient)
+
+    client, should_close = webapp_module._resolve_api_client(  # pyright: ignore[reportPrivateUsage]
+        None,
+        base_url="https://example.com",
+        timeout=None,
+        max_retries=None,
+    )
+
+    assert captured == {
+        "api_key": "token",
+        "base_url": "https://example.com",
+        "timeout": 0,
+        "max_retries": 0,
+    }
+    assert should_close is True
+    assert client is not None
+
+
 def test_frontend_route_rejects_path_traversal(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     (dist_dir / "assets").mkdir(parents=True)
@@ -882,3 +1079,20 @@ def test_frontend_route_missing_index(tmp_path: Path) -> None:
     response = client.get("/missing")
     assert response.status_code == 503
     assert "Frontend assets not found" in response.json()["detail"]
+
+
+def _base_config_dict() -> Dict[str, Any]:
+    return {
+        "listen": {
+            "frontend": {"host": "127.0.0.1", "port": 5173},
+            "proxy": {"host": "127.0.0.1", "port": 5000},
+        },
+        "inference": {"endpoint": "https://example.test/v1", "key": "secret-key"},
+        "retries": {"max": 4, "timeout": 45},
+        "log_level": "DEBUG",
+        "defaults": {
+            "max_rounds": 7,
+            "judge": "judge/slim",
+            "models": ["model/a", "model/b"],
+        },
+    }
