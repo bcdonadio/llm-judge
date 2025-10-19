@@ -282,7 +282,7 @@ def test_create_app_uses_yaml_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path
     manager = cast(JobManager, app.state.job_manager)
     defaults = manager.defaults()
     assert defaults["models"] == ["qwen/qwen3-next-80b-a3b-instruct"]
-    assert defaults["judge_model"] == "x-ai/grok-fast-4"
+    assert defaults["judge_model"] == "x-ai/grok-4-fast"
     assert defaults["limit"] == 1
     import os as _os
 
@@ -1096,3 +1096,10 @@ def _base_config_dict() -> Dict[str, Any]:
             "models": ["model/a", "model/b"],
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def use_example_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[1]
+    example_path = root / "config.example.yaml"
+    monkeypatch.setenv("LLM_JUDGE_CONFIG_PATH", str(example_path))

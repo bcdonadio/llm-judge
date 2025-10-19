@@ -14,6 +14,6 @@ retries:
 log_level: DEBUG
 defaults:
   max_rounds: 1
-  judge: x-ai/grok-fast-4
+  judge: x-ai/grok-4-fast
   models:
     - qwen/qwen3-next-80b-a3b-instruct

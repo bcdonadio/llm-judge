@@ -560,7 +560,11 @@ def create_app(
 
     # Load configuration settings
     project_root = Path(__file__).resolve().parents[3]
-    settings_path = project_root / "config.yaml"
+    config_override = os.getenv("LLM_JUDGE_CONFIG_PATH")
+    if config_override:
+        settings_path = Path(config_override).expanduser().resolve()
+    else:
+        settings_path = project_root / "config.yaml"
     settings = _load_yaml_config(settings_path)
     _configure_logging_level(settings.log_level)
 
