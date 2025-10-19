@@ -21,9 +21,7 @@ DEFAULT_STATE_FILE = DEFAULT_LOG_DIR / "state.json"
 DEFAULT_CONTROLLER_LOG = DEFAULT_LOG_DIR / "controller.log"
 DEFAULT_BACKEND_LOG = DEFAULT_LOG_DIR / "backend.log"
 DEFAULT_FRONTEND_LOG = DEFAULT_LOG_DIR / "frontend.log"
-DEFAULT_GUNICORN_WORKER_CLASS = "gevent"
-DEFAULT_GUNICORN_WORKERS = 1
-DEFAULT_GUNICORN_WORKER_CONNECTIONS = 1000
+DEFAULT_UVICORN_WORKERS = 1
 FRONTEND_DIRNAME = "webui"
 
 SHUTDOWN_WAIT_SECONDS = 10.0
@@ -71,9 +69,7 @@ class DevStackConfig:
     controller_log: Path = DEFAULT_CONTROLLER_LOG
     backend_log: Path = DEFAULT_BACKEND_LOG
     frontend_log: Path = DEFAULT_FRONTEND_LOG
-    gunicorn_worker_class: str = DEFAULT_GUNICORN_WORKER_CLASS
-    gunicorn_workers: int = DEFAULT_GUNICORN_WORKERS
-    gunicorn_worker_connections: int = DEFAULT_GUNICORN_WORKER_CONNECTIONS
+    uvicorn_workers: int = DEFAULT_UVICORN_WORKERS
 
 
 def _prepare_backend_env(config: DevStackConfig) -> Dict[str, str]:
@@ -149,18 +145,19 @@ def _launch_dev_servers(
     backend_cmd = [
         config.python_executable,
         "-m",
-        "gunicorn",
+        "uvicorn",
         config.wsgi_app,
-        "--worker-class",
-        config.gunicorn_worker_class,
-        "--workers",
-        str(config.gunicorn_workers),
-        "--worker-connections",
-        str(config.gunicorn_worker_connections),
-        "--bind",
-        f"{config.backend_host}:{config.backend_port}",
-        "--reload",
+        "--host",
+        config.backend_host,
+        "--port",
+        str(config.backend_port),
     ]
+    reload_enabled = True
+    if not reload_enabled and config.uvicorn_workers > 0:
+        backend_cmd.extend(["--workers", str(config.uvicorn_workers)])
+    if reload_enabled:
+        backend_cmd.append("--reload")
+
     frontend_cmd = [
         config.npm_command,
         "run",
@@ -172,7 +169,7 @@ def _launch_dev_servers(
         str(config.frontend_port),
     ]
 
-    controller.log("Launching Gunicorn development server")
+    controller.log("Launching Uvicorn development server")
     backend_proc = subprocess.Popen(
         backend_cmd,
         cwd=config.project_root,
@@ -574,7 +571,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "--flask-app",
             dest="wsgi_app",
             default="llm_judge.webapp:app",
-            help="WSGI application import path for Gunicorn (default: llm_judge.webapp:app)",
+            help="ASGI application import path for Uvicorn (default: llm_judge.webapp:app)",
         )
         default_project_root = str(Path(__file__).resolve().parents[2])
         subparser.add_argument(

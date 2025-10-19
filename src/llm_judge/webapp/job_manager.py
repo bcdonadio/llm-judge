@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import copy
 import logging
-import os
 import time
-from importlib import import_module
 from pathlib import Path
 from threading import Event, RLock, Thread
-from typing import Any, Callable, Dict, Iterator, List, Protocol
+from typing import Any, Callable, Dict, List, Protocol
 
 from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
 from llm_judge.infrastructure.utility_services import FileSystemService
-
-from .sse import SSEBroker, time_now_ms
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +53,7 @@ RunnerFactory = Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerCon
 
 
 class JobManager:
-    """Coordinates background runs and surfaces updates via SSE."""
+    """Coordinates background runs and surfaces updates via WebSocket."""
 
     def __init__(
         self,
@@ -73,7 +69,7 @@ class JobManager:
         self._runner_factory = runner_factory or self._default_runner_factory
         self._history_limit = history_limit
 
-        self._broker = SSEBroker()
+        self._websocket_manager: Any | None = None
         self._thread: Any | None = None
         self._control = ThreadedRunnerControl()
 
@@ -93,6 +89,15 @@ class JobManager:
     @property
     def outdir(self) -> Path:
         return self._outdir
+
+    def set_websocket_manager(self, manager: Any) -> None:
+        """Set the WebSocket manager for event broadcasting.
+
+        Args:
+            manager: WebSocketManager instance to use for broadcasting events
+        """
+        with self._lock:
+            self._websocket_manager = manager
 
     def set_supported_models(self, models: List[Dict[str, Any]]) -> None:
         with self._lock:
@@ -119,27 +124,15 @@ class JobManager:
             self._finished_at = None
             self._control = ThreadedRunnerControl()
 
-            # Detect Flask dev server (which doesn't work well with gevent due to reloader subprocess)
-            flask_debug = os.getenv("FLASK_DEBUG") == "1" or os.getenv("FLASK_ENV") == "development"
-
-            try:
-                gevent_module = import_module("gevent")
-            except ModuleNotFoundError:
-                gevent_module = None
-
-            # Use threading for Flask dev server, gevent for production (Gunicorn)
-            if gevent_module is not None and not flask_debug:
-                worker = gevent_module.spawn(self._run_worker, config, self._control)
-            else:
-                worker = Thread(
-                    target=self._run_worker,
-                    args=(config, self._control),
-                    daemon=True,
-                )
-                worker.start()
+            worker = Thread(
+                target=self._run_worker,
+                args=(config, self._control),
+                daemon=True,
+            )
+            worker.start()
             self._thread = worker
 
-        self._broker.publish(self._status_event())
+        self._publish_event(self._status_event())
         return config_dict
 
     def pause(self) -> bool:
@@ -148,7 +141,7 @@ class JobManager:
                 return False
             self._state = "paused"
         self._control.pause()
-        self._broker.publish(self._status_event())
+        self._publish_event(self._status_event())
         return True
 
     def resume(self) -> bool:
@@ -157,7 +150,7 @@ class JobManager:
                 return False
             self._state = "running"
         self._control.resume()
-        self._broker.publish(self._status_event())
+        self._publish_event(self._status_event())
         return True
 
     def cancel(self) -> bool:
@@ -166,7 +159,7 @@ class JobManager:
                 return False
             self._state = "cancelling"
         self._control.cancel()
-        self._broker.publish(self._status_event())
+        self._publish_event(self._status_event())
         return True
 
     def snapshot(self) -> Dict[str, Any]:
@@ -191,21 +184,6 @@ class JobManager:
             "status": status,
             "history": history_copy,
         }
-
-    def event_stream(self) -> Iterator[str]:
-        with self._lock:
-            status_payload = copy.deepcopy(self._status_payload())
-            history = copy.deepcopy(self._history)
-            summary_copy = copy.deepcopy(self._summary)
-            artifacts_copy = copy.deepcopy(self._artifacts)
-
-        initial_events: List[Dict[str, Any]] = [{"type": "status", "payload": status_payload}]
-        initial_events.extend(history)
-        if summary_copy is not None:
-            initial_events.append({"type": "summary", "payload": {"summary": summary_copy}})
-        if artifacts_copy is not None:
-            initial_events.append({"type": "artifacts", "payload": artifacts_copy})
-        return self._broker.stream(initial_events)
 
     def defaults(self) -> Dict[str, Any]:
         return {
@@ -249,7 +227,7 @@ class JobManager:
         finally:
             with self._lock:
                 self._thread = None
-            self._broker.publish(self._status_event())
+            self._publish_event(self._status_event())
 
     def _handle_runner_event(self, event: RunnerEvent) -> None:
         event_dict = {"type": event.type, "payload": event.payload}
@@ -280,15 +258,30 @@ class JobManager:
         if store_in_history:
             self._append_history(event_dict)
 
-        self._broker.publish(event_dict)
+        self._publish_event(event_dict)
         if publish_status:
-            self._broker.publish(self._status_event())
+            self._publish_event(self._status_event())
 
     def _append_history(self, event: Dict[str, Any]) -> None:
         with self._lock:
             self._history.append(copy.deepcopy(event))
             if len(self._history) > self._history_limit:
                 self._history = self._history[-self._history_limit :]
+
+    def _publish_event(self, event: Dict[str, Any]) -> None:
+        """Publish event to WebSocket manager if available.
+
+        Args:
+            event: Event dictionary to publish
+        """
+        with self._lock:
+            ws_manager = self._websocket_manager
+
+        if ws_manager is not None:
+            try:
+                ws_manager.publish(event)
+            except Exception as exc:  # pragma: no cover
+                LOGGER.debug("Failed to publish event to WebSocket manager: %s", exc)
 
     def _status_event(self) -> Dict[str, Any]:
         return {"type": "status", "payload": self._status_payload()}
@@ -301,7 +294,7 @@ class JobManager:
                 "config": copy.deepcopy(self._active_config),
                 "started_at": self._started_at,
                 "finished_at": self._finished_at,
-                "ts": time_now_ms(),
+                "ts": int(time.time() * 1000),
             }
             if self._summary is not None:
                 payload["summary"] = copy.deepcopy(self._summary)

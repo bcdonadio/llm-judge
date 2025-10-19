@@ -1,5 +1,4 @@
-# pyright: reportPrivateUsage=false
-"""Tests covering the Flask web UI helpers."""
+"""Tests covering the FastAPI web UI helpers."""
 
 from __future__ import annotations
 
@@ -8,19 +7,19 @@ import importlib
 import os
 import sys
 import time
-from importlib import import_module
 from pathlib import Path
 from threading import Thread
-from typing import Any, Callable, Dict, Iterator, List, cast
+from typing import Any, Callable, Dict, List, cast
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import llm_judge.webapp as webapp_module
 from llm_judge.runner import LLMJudgeRunner, RunArtifacts, RunnerConfig, RunnerControl, RunnerEvent
 from llm_judge.webapp import create_app
 from llm_judge.webapp.job_manager import JobManager, ThreadedRunnerControl
-from llm_judge.webapp.sse import SSEBroker
 
 
 class StubRunner:
@@ -102,12 +101,6 @@ def _wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
         if predicate():
             return True
         time.sleep(0.01)
-        try:
-            gevent_module = import_module("gevent")
-        except ModuleNotFoundError:
-            gevent_module = None
-        if gevent_module is not None:
-            gevent_module.sleep(0)
     return False
 
 
@@ -221,40 +214,60 @@ def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_
 
 def test_serve_frontend_missing_dist(tmp_path: Path) -> None:
     app = create_app({"FRONTEND_DIST": str(tmp_path / "missing"), "RUNS_OUTDIR": str(tmp_path / "runs")})
-    client = app.test_client()
+    client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 503
-    payload = response.get_json()
+    payload = response.json()
     assert isinstance(payload, dict)
-    assert payload["error"] == "Frontend assets not found."
+    assert payload["detail"] == "Frontend assets not found."
+    assert payload["hint"] == "Run `npm install && npm run build` inside webui/."
 
 
 def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()  # FastAPI requires assets subdirectory
     (dist_dir / "index.html").write_text("<html>ok</html>")
     (dist_dir / "bundle.js").write_text("console.log('hi')")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    symlink_target = dist_dir / "link"
+    symlink_target.symlink_to(outside, target_is_directory=True)
 
     app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
-    client = app.test_client()
+    client = TestClient(app)
 
     response = client.get("/bundle.js")
     assert response.status_code == 200
-    assert response.data == b"console.log('hi')"
+    assert response.content == b"console.log('hi')"
 
-    traversal = client.get("/../secret.txt")
-    assert traversal.status_code == 400
-    traversal_payload = traversal.get_json()
-    assert isinstance(traversal_payload, dict)
-    assert traversal_payload["error"] == "Invalid path"
+    # Test path traversal - FastAPI normalizes the direct "../" path but our guard still
+    # ensures the response falls back to the SPA shell rather than leaking files.
+    traversal = client.get("/../../secret.txt")
+    assert traversal.status_code == 200
+    assert b"<html>ok</html>" in traversal.content
+
+    # Encoded traversal should be rejected with an explicit 400 error.
+    encoded = client.get("/..%2F..%2Fsecret.txt")
+    assert encoded.status_code == 400
+    assert encoded.json()["detail"] == "Invalid path"
+
+    absolute = client.get("/%2Fetc/passwd")
+    assert absolute.status_code == 400
+    assert absolute.json()["detail"] == "Invalid path"
+
+    symlink = client.get("/link/secret.txt")
+    assert symlink.status_code == 400
+    assert symlink.json()["detail"] == "Invalid path"
 
     fallback = client.get("/")
     assert fallback.status_code == 200
-    assert b"<html>ok</html>" in fallback.data
+    assert b"<html>ok</html>" in fallback.content
 
     fallback_asset = client.get("/missing.js")
     assert fallback_asset.status_code == 200
-    assert b"<html>ok</html>" in fallback_asset.data
+    assert b"<html>ok</html>" in fallback_asset.content
 
 
 def test_job_manager_completes_run(tmp_path: Path) -> None:
@@ -320,62 +333,6 @@ def test_threaded_runner_control_waits_until_resumed() -> None:
     control.resume()
     thread.join(timeout=1)
     assert resumed
-
-
-def test_job_manager_gevent_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from llm_judge.webapp import job_manager as job_module
-
-    calls: List[FakeGreenlet] = []
-
-    class FakeGreenlet:
-        def __init__(self, func: Callable[..., Any], args: tuple[Any, ...]) -> None:
-            self._func = func
-            self._args = args
-            self.dead = False
-
-        def run(self) -> None:
-            self._func(*self._args)
-            self.dead = True
-
-    class FakeGevent:
-        def spawn(self, func: Callable[..., Any], *args: Any) -> FakeGreenlet:
-            greenlet = FakeGreenlet(func, args)
-            calls.append(greenlet)
-            return greenlet
-
-    fake_gevent = FakeGevent()
-    original_import = job_module.import_module
-
-    def fake_import(name: str) -> Any:
-        if name == "gevent":
-            return fake_gevent
-        return original_import(name)
-
-    monkeypatch.setattr(job_module, "import_module", fake_import)
-
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
-    assert calls
-    for greenlet in calls:
-        greenlet.run()
-
-
-def test_job_manager_threading_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Test that JobManager falls back to threading when gevent is unavailable."""
-    from llm_judge.webapp import job_manager as job_module
-
-    original_import = job_module.import_module
-
-    def fake_import_no_gevent(name: str) -> Any:
-        if name == "gevent":
-            raise ModuleNotFoundError("No module named 'gevent'")
-        return original_import(name)
-
-    monkeypatch.setattr(job_module, "import_module", fake_import_no_gevent)
-
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    manager.start_run({"models": ["demo-model"], "judge_model": "tester"})
-    assert _wait_for(lambda: manager.snapshot()["status"]["state"] == "completed")
 
 
 def test_job_manager_rejects_concurrent_runs(tmp_path: Path) -> None:
@@ -480,48 +437,147 @@ def test_job_manager_default_runner_factory(tmp_path: Path) -> None:
     assert isinstance(runner, LLMJudgeRunner)
 
 
-def test_sse_broker_publish_roundtrip() -> None:
-    broker = SSEBroker(keepalive_s=0.001)
-    stream = broker.stream(initial=[{"type": "ready"}])
-    next(stream)  # consume initial event to register subscriber
-    broker.publish({"type": "message", "payload": {"value": 42}})
-    for _ in range(5):
-        chunk = next(stream)
-        if "value" in chunk:
-            break
-    else:
-        pytest.fail("did not receive expected message event")
+def test_job_manager_handle_run_completed_when_cancelled(tmp_path: Path) -> None:
+    """Test that _handle_runner_event does not change state to completed when already cancelled."""
+    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
+    cast(Any, manager)._state = "cancelled"
+    event = RunnerEvent("run_completed", {"csv_path": "test.csv", "runs_dir": "runs", "summary": {}})
+    cast(Any, manager)._handle_runner_event(event)
+    assert cast(Any, manager)._state == "cancelled"
 
 
-def test_sse_broker_requires_type_field() -> None:
-    broker = SSEBroker()
-    with pytest.raises(ValueError, match="must include a 'type' field"):
-        broker.publish({"payload": {"value": 42}})
+def test_job_manager_publish_event_invokes_websocket_manager(tmp_path: Path) -> None:
+    manager = JobManager(outdir=tmp_path)
+    recorded: List[Dict[str, Any]] = []
+
+    class StubWebSocketManager:
+        def publish(self, event: Dict[str, Any]) -> None:
+            recorded.append(event)
+
+    cast(Any, manager)._websocket_manager = StubWebSocketManager()
+    event = {"type": "status", "payload": {"state": "idle"}}
+    publish_event = getattr(manager, "_publish_event")
+    publish_event(event)
+    assert recorded == [event]
 
 
-def test_sse_broker_handles_generator_exit() -> None:
-    """Test that SSE broker cleans up subscribers on generator exit."""
-    broker = SSEBroker(keepalive_s=0.001)
-    stream = broker.stream()
-    next(stream)  # register subscriber
-    assert len(cast(Any, broker)._subscribers) == 1
-    # Trigger GeneratorExit by not consuming the generator
-    del stream
-    # The cleanup happens in the finally block when generator is garbage collected
+def test_threaded_runner_control_wait_breaks_when_cancelled() -> None:
+    control = ThreadedRunnerControl(poll_interval=0)
+    control.pause()
+    cast(Any, control)._cancel_event.set()
+    cast(Any, control)._pause_event.clear()
+    control.wait_if_paused()
 
 
-def test_sse_broker_cleanup_when_not_subscriber() -> None:
-    """Test that SSE broker does not remove mailbox if not in subscribers."""
-    broker = SSEBroker(keepalive_s=0.001)
-    stream = broker.stream()
-    next(stream)  # start the generator, add mailbox
-    mailbox = cast(Any, broker)._subscribers[0]
-    assert len(cast(Any, broker)._subscribers) == 1
-    # Manually remove the mailbox
-    cast(Any, broker)._subscribers.remove(mailbox)
-    # Trigger GeneratorExit
-    del stream
-    # Since mailbox not in subscribers, the if is false
+def test_websocket_endpoint_exists() -> None:
+    """Test that WebSocket endpoint is registered."""
+    app = create_app({"TESTING": True})
+
+    # Verify WebSocket endpoint exists by checking app.routes
+    has_ws_route = any(getattr(route, "path", None) == "/api/ws" for route in app.routes)
+    assert has_ws_route, "WebSocket endpoint /api/ws not found in routes"
+
+
+def test_websocket_connection_basic(tmp_path: Path) -> None:
+    """Test basic WebSocket connection and initial state."""
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path)})
+    client = TestClient(app)
+
+    with client.websocket_connect("/api/ws") as websocket:
+        # Should receive initial status message
+        data = websocket.receive_json()
+        assert data["type"] == "status"
+        assert "payload" in data
+        assert data["payload"]["state"] == "idle"
+
+
+def test_websocket_initial_events_include_summary_and_artifacts(tmp_path: Path) -> None:
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path)})
+    manager = cast(JobManager, app.state.job_manager)
+    summary = {"model": {"total": 1, "ok": 1, "issues": 0}}
+    artifacts = {"csv_path": "status.csv", "runs_dir": "runs"}
+    cast(Any, manager)._summary = summary
+    cast(Any, manager)._artifacts = artifacts
+    cast(Any, manager)._history = [{"type": "message", "payload": {"content": "hello"}}]
+    cast(Any, manager)._state = "running"
+
+    client = TestClient(app)
+    with client.websocket_connect("/api/ws") as websocket:
+        events = [websocket.receive_json() for _ in range(4)]
+
+    event_types = [event["type"] for event in events]
+    assert event_types == ["status", "message", "summary", "artifacts"]
+    assert events[2]["payload"]["summary"] == summary
+    assert events[3]["payload"] == artifacts
+
+
+def test_websocket_endpoint_handles_disconnect(tmp_path: Path) -> None:
+    app = create_app({"TESTING": True, "RUNS_OUTDIR": str(tmp_path)})
+
+    class SnapshotOnlyManager:
+        def snapshot(self) -> Dict[str, Any]:
+            return {"status": {"state": "idle"}, "history": []}
+
+    app.state.job_manager = SnapshotOnlyManager()
+
+    websocket_manager = app.state.websocket_manager
+    original_disconnect = websocket_manager.disconnect
+    original_send_event = websocket_manager._send_event
+    disconnect_called = False
+    raised = False
+
+    async def failing_send_event(websocket: Any, event: Any) -> None:
+        nonlocal raised
+        raised = True
+        raise WebSocketDisconnect()
+
+    async def spy_disconnect(websocket: Any) -> None:
+        nonlocal disconnect_called
+        disconnect_called = True
+        await original_disconnect(websocket)
+
+    setattr(websocket_manager, "_send_event", failing_send_event)
+    setattr(websocket_manager, "disconnect", spy_disconnect)
+
+    websocket_route = next(route for route in app.routes if getattr(route, "path", None) == "/api/ws")
+    websocket_endpoint = cast(Any, websocket_route).endpoint
+
+    class StubWebSocket:
+        async def accept(self) -> None:
+            return None
+
+        async def send_json(self, message: Dict[str, Any]) -> None:
+            raise AssertionError("send_json should not be called")
+
+    import asyncio
+
+    async def invoke() -> None:
+        await websocket_endpoint(StubWebSocket())
+
+    asyncio.run(invoke())
+
+    assert disconnect_called
+    assert raised
+
+    setattr(websocket_manager, "_send_event", original_send_event)
+    setattr(websocket_manager, "disconnect", original_disconnect)
+
+
+def test_serve_frontend_request_handles_missing_raw_path(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()
+    (dist_dir / "index.html").write_text("<html>ok</html>")
+
+    serve_frontend_request = getattr(webapp_module, "_serve_frontend_request")
+    response = serve_frontend_request(dist_dir, "index.html", None)
+    assert getattr(response, "status_code", 200) == 200
+
+
+def test_normalise_raw_path_non_bytes() -> None:
+    normalise_raw_path = getattr(webapp_module, "_normalise_raw_path")
+    assert normalise_raw_path("not-bytes") is None
+    assert normalise_raw_path(bytearray(b"/path")) == b"/path"
 
 
 class DummyManager:
@@ -586,37 +642,34 @@ class DummyManager:
         self.state = "cancelled"
         return True
 
-    def event_stream(self) -> Iterator[str]:
-        yield 'event: status\ndata: {"type":"status","payload":{"state":"idle"}}\n\n'
 
-
-def test_flask_api_routes(tmp_path: Path) -> None:
+def test_fastapi_api_routes(tmp_path: Path) -> None:
     app = create_app({"TESTING": True})
     dummy = DummyManager()
-    app.config["JOB_MANAGER"] = dummy
+    app.state.job_manager = dummy
 
-    client = app.test_client()
+    client = TestClient(app)
 
     health_resp = client.get("/api/health")
     assert health_resp.status_code == 200
-    assert health_resp.get_json()["status"] == "ok"
+    assert health_resp.json()["status"] == "ok"
 
     state_resp = client.get("/api/state")
     assert state_resp.status_code == 200
 
     defaults_resp = client.get("/api/defaults")
     assert defaults_resp.status_code == 200
-    defaults_payload = defaults_resp.get_json()
+    defaults_payload = defaults_resp.json()
     assert defaults_payload["judge_model"] == "x-ai/grok-4-fast"
     assert defaults_payload["models"] == ["qwen/qwen3-next-80b-a3b-instruct"]
 
     models_resp = client.get("/api/models")
     assert models_resp.status_code == 200
-    assert models_resp.get_json() == {"models": dummy.get_supported_models()}
+    assert models_resp.json() == {"models": dummy.get_supported_models()}
 
     run_error = client.post("/api/run", json={"models": [], "judge_model": "x-ai/grok-4-fast"})
     assert run_error.status_code == 400
-    assert "Invalid configuration provided" in run_error.get_json()["error"]
+    assert "Invalid configuration provided" in run_error.json()["detail"]
 
     run_resp = client.post(
         "/api/run",
@@ -641,15 +694,10 @@ def test_flask_api_routes(tmp_path: Path) -> None:
     assert client.post("/api/resume").status_code == 400
     assert client.post("/api/cancel").status_code == 400
 
-    events_resp = client.get("/api/events")
-    first_chunk = next(iter(events_resp.response))
-    chunk_text = first_chunk.decode("utf-8") if isinstance(first_chunk, bytes) else str(first_chunk)
-    assert "event: status" in chunk_text
-
 
 def test_frontend_missing_assets(tmp_path: Path) -> None:
     app = create_app({"TESTING": True, "FRONTEND_DIST": str(tmp_path / "missing")})
-    client = app.test_client()
+    client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 503
 
@@ -657,97 +705,31 @@ def test_frontend_missing_assets(tmp_path: Path) -> None:
 def test_frontend_serves_existing_asset(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir(parents=True)
+    (dist_dir / "assets").mkdir()  # FastAPI requires assets subdirectory
     (dist_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
     (dist_dir / "style.css").write_text("body { color: red; }", encoding="utf-8")
     app = create_app({"TESTING": True, "FRONTEND_DIST": str(dist_dir)})
-    client = app.test_client()
+    client = TestClient(app)
     response = client.get("/")
     assert response.status_code == 200
-    assert b"ok" in response.data
+    assert b"ok" in response.content
 
     # Test serving a specific file
     css_response = client.get("/style.css")
     assert css_response.status_code == 200
-    assert b"color: red" in css_response.data
+    assert b"color: red" in css_response.content
 
 
 def test_create_app_configures_temp_outdir() -> None:
     app = create_app({"TESTING": True})
-    outdir_value = cast(str, app.config["RUNS_OUTDIR"])
+    outdir_value = cast(str, app.state.config["RUNS_OUTDIR"])
     outdir = Path(outdir_value).resolve()
     project_root = Path(__file__).resolve().parent.parent
     assert outdir.exists()
     with pytest.raises(ValueError):
         outdir.relative_to(project_root)
-    models_cache = cast(List[Dict[str, Any]], app.config["OPENROUTER_MODELS"])
+    models_cache = cast(List[Dict[str, Any]], app.state.config["OPENROUTER_MODELS"])
     assert isinstance(models_cache, list)
-
-
-def test_job_manager_event_stream_includes_history(tmp_path: Path) -> None:
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    cast(Any, manager)._history = [{"type": "message", "payload": {"body": "hello"}}]
-    cast(Any, manager)._summary = {"demo": [{"total": 0}]}
-    stream = manager.event_stream()
-    status_chunk = next(stream)
-    assert "event: status" in status_chunk
-    history_chunk = next(stream)
-    assert "message" in history_chunk
-
-
-def test_job_manager_event_stream_includes_artifacts(tmp_path: Path) -> None:
-    """Test that event_stream includes artifacts when they exist."""
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    cast(Any, manager)._history = []
-    cast(Any, manager)._summary = {"demo": [{"total": 1}]}
-    cast(Any, manager)._artifacts = {
-        "csv_path": "results.csv",
-        "runs_dir": "runs",
-        "summary": {"demo": [{"total": 1}]},
-    }
-    stream = manager.event_stream()
-    status_chunk = next(stream)
-    assert "event: status" in status_chunk
-    summary_chunk = next(stream)
-    assert "summary" in summary_chunk
-    artifacts_chunk = next(stream)
-    assert "artifacts" in artifacts_chunk
-    assert "results.csv" in artifacts_chunk
-
-
-def test_job_manager_event_stream_no_summary_when_none(tmp_path: Path) -> None:
-    """Test that event_stream does not include summary when _summary is None."""
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    cast(Any, manager)._history = [{"type": "message", "payload": {"body": "hello"}}]
-    cast(Any, manager)._summary = None
-    stream = manager.event_stream()
-    status_chunk = next(stream)
-    assert "event: status" in status_chunk
-    history_chunk = next(stream)
-    assert "message" in history_chunk
-    cast(Any, stream).close()
-    # No summary chunk since _summary is None
-    try:
-        next(stream)
-        assert False, "Should not have more chunks"
-    except StopIteration:
-        pass
-
-
-def test_threaded_runner_control_wait_breaks_when_cancelled() -> None:
-    control = ThreadedRunnerControl(poll_interval=0)
-    control.pause()
-    cast(Any, control)._cancel_event.set()
-    cast(Any, control)._pause_event.clear()
-    control.wait_if_paused()
-
-
-def test_job_manager_handle_run_completed_when_cancelled(tmp_path: Path) -> None:
-    """Test that _handle_runner_event does not change state to completed when already cancelled."""
-    manager = JobManager(outdir=tmp_path, runner_factory=_runner_factory())
-    cast(Any, manager)._state = "cancelled"
-    event = RunnerEvent("run_completed", {"csv_path": "test.csv", "runs_dir": "runs", "summary": {}})
-    cast(Any, manager)._handle_runner_event(event)
-    assert cast(Any, manager)._state == "cancelled"
 
 
 def test_webapp_without_di_support(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -819,7 +801,7 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     app = create_app({"RUNS_OUTDIR": str(tmp_path)}, container=container)  # type: ignore[arg-type]
-    manager = cast(JobManager, app.config["JOB_MANAGER"])
+    manager = cast(JobManager, app.state.job_manager)
     assert isinstance(manager, JobManager)
     config = RunnerConfig(
         models=["m"],
@@ -833,7 +815,7 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
     factory = cast(
         Callable[[RunnerConfig, Callable[[RunnerEvent], None], RunnerControl], LLMJudgeRunner],
-        manager._runner_factory,
+        getattr(manager, "_runner_factory"),
     )
 
     def noop(event: RunnerEvent) -> None:
@@ -841,7 +823,7 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     runner = factory(config, noop, RunnerControl())
     assert isinstance(runner, LLMJudgeRunner)
-    assert app.config["OPENROUTER_MODELS"] == [{"id": "stub/model-a", "name": "Model A"}]
+    assert app.state.config["OPENROUTER_MODELS"] == [{"id": "stub/model-a", "name": "Model A"}]
     assert api_client_stub.calls.get("list_models") is True
     assert manager.get_supported_models() == [{"id": "stub/model-a", "name": "Model A"}]
 
@@ -849,6 +831,7 @@ def test_create_app_with_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_create_app_respects_base_url(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()  # FastAPI requires assets subdirectory
     app = create_app(
         {
             "FRONTEND_DIST": str(dist_dir),
@@ -856,7 +839,7 @@ def test_create_app_respects_base_url(tmp_path: Path) -> None:
             "OPENROUTER_BASE_URL": "https://custom.example/api",
         }
     )
-    assert app.config["OPENROUTER_BASE_URL"] == "https://custom.example/api"
+    assert app.state.config["OPENROUTER_BASE_URL"] == "https://custom.example/api"
 
 
 def test_create_app_raises_when_di_factory_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -873,5 +856,29 @@ def test_create_app_raises_when_di_factory_missing(monkeypatch: pytest.MonkeyPat
 
 def test_load_supported_models_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    models = webapp_module._load_supported_models(None, base_url="https://example.com")
+    load_supported_models = getattr(webapp_module, "_load_supported_models")
+    models = load_supported_models(None, base_url="https://example.com")
     assert models == []
+
+
+def test_frontend_route_rejects_path_traversal(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<!doctype html>")
+    app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
+    client = TestClient(app)
+
+    response = client.get("/%2e%2e/secret")
+    assert response.status_code == 400
+
+
+def test_frontend_route_missing_index(tmp_path: Path) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()
+    app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
+    client = TestClient(app)
+
+    response = client.get("/missing")
+    assert response.status_code == 503
+    assert "Frontend assets not found" in response.json()["detail"]

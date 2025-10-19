@@ -27,7 +27,19 @@ export const artifactsStore = writable<ArtifactsInfo | null>(null);
 export const defaultsStore = writable<DefaultsResponse | null>(null);
 export const modelCatalogStore = writable<ModelInfo[]>([]);
 
-let eventSource: EventSource | null = null;
+let ws: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectDelay = 1000; // Start with 1 second
+let pingTimer: ReturnType<typeof setInterval> | null = null;
+let isManualDisconnect = false;
+
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "error";
+
+export const connectionStore = writable<ConnectionState>("disconnected");
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -180,42 +192,95 @@ export async function initializeStores(): Promise<void> {
 }
 
 export function connectEvents(): () => void {
-  if (eventSource) {
-    eventSource.close();
+  if (ws) {
+    ws.close();
   }
 
-  eventSource = new EventSource("/api/events");
-  const events = [
-    "status",
-    "run_started",
-    "message",
-    "judge",
-    "summary",
-    "run_completed",
-    "run_cancelled",
-    "artifacts",
-  ];
+  function createWebSocket(): WebSocket {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/api/ws`;
+    connectionStore.set("connecting");
+    return new WebSocket(wsUrl);
+  }
 
-  for (const eventName of events) {
-    eventSource.addEventListener(eventName, (event) => {
-      try {
-        const parsed = JSON.parse(
-          (event as MessageEvent<string>).data,
-        ) as EventPayload;
-        handleEvent(parsed);
-      } catch (err) {
-        console.error("Failed to parse SSE payload", err);
+  function onMessage(event: MessageEvent<string>): void {
+    try {
+      const parsed = JSON.parse(event.data) as EventPayload;
+      handleEvent(parsed);
+    } catch (err) {
+      console.error("Failed to parse WebSocket message", err);
+    }
+  }
+
+  function onOpen(): void {
+    connectionStore.set("connected");
+    reconnectDelay = 1000; // Reset delay on successful connection
+    if (pingTimer) {
+      clearInterval(pingTimer);
+    }
+    pingTimer = setInterval(() => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ping", payload: {} }));
       }
-    });
+    }, 20000); // 20 seconds as per requirements
   }
 
-  eventSource.addEventListener("error", (err) => {
-    console.warn("SSE connection error", err);
-  });
+  function onClose(): void {
+    const state = isManualDisconnect ? "disconnected" : "error";
+    connectionStore.set(state);
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    if (!isManualDisconnect) {
+      // Exponential backoff with max 30 seconds
+      const delay = Math.min(reconnectDelay, 30000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        ws = createWebSocket();
+        ws.onopen = onOpen;
+        ws.onclose = onClose;
+        ws.onerror = onerror;
+        ws.onmessage = onMessage;
+      }, delay);
+      // Increase delay for next time (exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s max)
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    } else {
+      isManualDisconnect = false;
+    }
+  }
+
+  function onerror(ev: Event): void {
+    console.warn("WebSocket error", ev);
+    connectionStore.set("error");
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  }
+
+  ws = createWebSocket();
+  ws.onopen = onOpen;
+  ws.onclose = onClose;
+  ws.onerror = onerror;
+  ws.onmessage = onMessage;
 
   return () => {
-    eventSource?.close();
-    eventSource = null;
+    isManualDisconnect = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    ws?.close();
+    ws = null;
   };
 }
 

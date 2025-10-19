@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.svelte";
 import * as stores from "@/lib/stores";
+import type { ConnectionState } from "@/lib/stores";
 
-const { artifactsStore } = stores;
+const { artifactsStore, connectionStore } = stores;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -47,6 +48,24 @@ describe("App", () => {
     expect(screen.getByText("LLM Judge")).toBeInTheDocument();
     expect(screen.getByText("Scoreboard")).toBeInTheDocument();
 
+    connectionStore.set("connected");
+
+    await waitFor(() => {
+      expect(screen.getByText("Connection: connected")).toBeInTheDocument();
+    });
+
+    connectionStore.set(undefined as unknown as ConnectionState);
+
+    await waitFor(() => {
+      expect(screen.getByText(/^Connection:\s*$/)).toBeInTheDocument();
+    });
+
+    connectionStore.set("connected");
+
+    await waitFor(() => {
+      expect(screen.getByText("Connection: connected")).toBeInTheDocument();
+    });
+
     artifactsStore.set({ csv_path: "runs.csv", runs_dir: "runs" });
 
     await waitFor(() => {
@@ -82,6 +101,55 @@ describe("App", () => {
     unmount();
     expect(disconnectMock).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it("shows a loading indicator until initialization completes", async () => {
+    const disconnectMock = vi.fn();
+    let resolveInit!: () => void;
+    const initPromise = new Promise<void>((resolve) => {
+      resolveInit = resolve;
+    });
+    vi.spyOn(stores, "initializeStores").mockReturnValue(initPromise);
+    const connectSpy = vi
+      .spyOn(stores, "connectEvents")
+      .mockReturnValue(disconnectMock);
+
+    const { unmount } = render(App);
+
+    expect(screen.getByText("Loading dashboard…")).toBeInTheDocument();
+
+    resolveInit();
+
+    await waitFor(() => {
+      expect(connectSpy).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Loading dashboard…")).not.toBeInTheDocument();
+    });
+
+    unmount();
+    expect(disconnectMock).toHaveBeenCalled();
+  });
+
+  it("skips disconnect cleanup when initialization has not finished", async () => {
+    let resolveInit!: () => void;
+    const initPromise = new Promise<void>((resolve) => {
+      resolveInit = resolve;
+    });
+    const connectSpy = vi
+      .spyOn(stores, "connectEvents")
+      .mockReturnValue(vi.fn());
+    vi.spyOn(stores, "initializeStores").mockReturnValue(initPromise);
+
+    const { unmount } = render(App);
+    unmount();
+
+    expect(connectSpy).not.toHaveBeenCalled();
+
+    resolveInit();
+    await waitFor(() => {
+      expect(connectSpy).not.toHaveBeenCalled();
+    });
   });
 
   it("keeps the conversation panel scrollable without clipping", async () => {
