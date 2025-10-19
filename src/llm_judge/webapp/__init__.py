@@ -9,7 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, cast
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, Request, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -366,12 +366,8 @@ def _register_websocket_routes(app: FastAPI) -> None:
             # Send events (this will block and handle keepalive)
             await ws_manager.send_events(websocket, initial_events)
 
-        except WebSocketDisconnect:
-            pass
         except Exception as exc:  # pragma: no cover
             logging.getLogger(__name__).debug("WebSocket connection error: %s", exc)
-        finally:
-            await ws_manager.disconnect(websocket)
 
 
 def _register_frontend_routes(app: FastAPI, dist_dir: Path) -> None:

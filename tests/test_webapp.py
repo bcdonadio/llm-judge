@@ -511,12 +511,12 @@ def test_websocket_endpoint_handles_disconnect(tmp_path: Path) -> None:
     app.state.job_manager = SnapshotOnlyManager()
 
     websocket_manager = app.state.websocket_manager
-    original_send = websocket_manager.send_events
     original_disconnect = websocket_manager.disconnect
+    original_send_event = websocket_manager._send_event
     disconnect_called = False
     raised = False
 
-    async def failing_send_events(websocket: Any, initial_events: Any) -> None:
+    async def failing_send_event(websocket: Any, event: Any) -> None:
         nonlocal raised
         raised = True
         raise WebSocketDisconnect()
@@ -526,7 +526,7 @@ def test_websocket_endpoint_handles_disconnect(tmp_path: Path) -> None:
         disconnect_called = True
         await original_disconnect(websocket)
 
-    setattr(websocket_manager, "send_events", failing_send_events)
+    setattr(websocket_manager, "_send_event", failing_send_event)
     setattr(websocket_manager, "disconnect", spy_disconnect)
 
     websocket_route = next(route for route in app.routes if getattr(route, "path", None) == "/api/ws")
@@ -549,7 +549,7 @@ def test_websocket_endpoint_handles_disconnect(tmp_path: Path) -> None:
     assert disconnect_called
     assert raised
 
-    setattr(websocket_manager, "send_events", original_send)
+    setattr(websocket_manager, "_send_event", original_send_event)
     setattr(websocket_manager, "disconnect", original_disconnect)
 
 

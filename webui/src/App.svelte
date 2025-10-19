@@ -35,7 +35,10 @@
   });
 
   const artifacts = $derived($artifactsStore);
-  const connectionStatus = $derived($connectionStore) as ConnectionState;
+  const connectionStatus = $derived($connectionStore ?? "");
+  const connectionStateAttr: ConnectionState = $derived(
+    $connectionStore ?? "disconnected",
+  );
 </script>
 
 <div class="app-shell">
@@ -49,7 +52,7 @@
     <div class="chat-wrapper">
       <ChatWindow />
     </div>
-    <div class="connection-status" data-state={connectionStatus}>
+    <div class="connection-status" data-state={connectionStateAttr}>
       <!-- c8 ignore next -->
       Connection: {connectionStatus}
     </div>
