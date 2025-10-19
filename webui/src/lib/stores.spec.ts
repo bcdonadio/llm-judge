@@ -1,8 +1,10 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import type {
   ArtifactsInfo,
   DefaultsResponse,
+  EventPayload,
   ModelSummary,
   StatusPayload,
 } from "./types";
@@ -10,6 +12,7 @@ import {
   artifactsStore,
   cancelRun,
   connectEvents,
+  connectionStore,
   defaultsStore,
   initializeStores,
   isActiveState,
@@ -30,44 +33,72 @@ const defaultStatus: StatusPayload = {
   finished_at: null,
 };
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
+class MockWebSocket {
+  static instances: MockWebSocket[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
 
   url: string;
-  listeners: Record<
-    string,
-    ((event: MessageEvent<string> | Record<string, unknown>) => void)[]
-  > = {};
+  readyState = MockWebSocket.CONNECTING;
   closed = false;
+  onopen: ((event: Event) => void) | null = null;
+  onclose: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
 
   constructor(url: string) {
     this.url = url;
-    MockEventSource.instances.push(this);
+    MockWebSocket.instances.push(this);
   }
 
-  addEventListener(
-    type: string,
-    listener: (event: MessageEvent<string> | Record<string, unknown>) => void,
-  ) {
-    this.listeners[type] ||= [];
-    this.listeners[type].push(listener);
+  send(data: string): void {
+    void data; // no-op for tests
   }
 
-  close() {
+  close(): void {
     this.closed = true;
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({ type: "close" } as Event);
   }
 
-  emit(name: string, data: unknown) {
-    for (const listener of this.listeners[name] ?? []) {
-      listener(data as MessageEvent<string>);
-    }
+  serverClose(): void {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.({ type: "close" } as Event);
+  }
+
+  emit<T>(payload: EventPayload<T>): void {
+    this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent<string>);
+  }
+
+  emitRaw(data: string): void {
+    this.onmessage?.({ data } as MessageEvent<string>);
+  }
+
+  triggerError(event: Event = { type: "error" } as Event): void {
+    this.onerror?.(event);
+  }
+
+  triggerOpen(): void {
+    this.readyState = MockWebSocket.OPEN;
+    this.onopen?.({ type: "open" } as Event);
   }
 }
 
 describe("stores", () => {
-  const originalEventSource = globalThis.EventSource;
+  const originalWebSocket = globalThis.WebSocket;
   const originalFetch = globalThis.fetch;
   let cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  let setIntervalSpy!: MockInstance<typeof globalThis.setInterval>;
+  let clearIntervalSpy!: MockInstance<typeof globalThis.clearInterval>;
+  const useFakeTimersWithTimerSpies = () => {
+    setIntervalSpy.mockRestore();
+    clearIntervalSpy.mockRestore();
+    vi.useFakeTimers();
+    setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+  };
 
   beforeEach(() => {
     statusStore.set({ ...defaultStatus });
@@ -76,15 +107,22 @@ describe("stores", () => {
     artifactsStore.set(null);
     defaultsStore.set(null);
     modelCatalogStore.set([]);
-    MockEventSource.instances = [];
+    MockWebSocket.instances = [];
     vi.restoreAllMocks();
     vi.useRealTimers();
-    globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
   });
 
   afterEach(() => {
-    globalThis.EventSource = originalEventSource;
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket;
+    } else {
+      delete (globalThis as { WebSocket?: typeof globalThis.WebSocket })
+        .WebSocket;
+    }
     globalThis.fetch = originalFetch;
     if (cryptoDescriptor) {
       Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
@@ -296,16 +334,14 @@ describe("stores", () => {
     expect(get(modelCatalogStore)).toEqual([]);
   });
 
-  function emit(instance: MockEventSource, name: string, payload: unknown) {
-    instance.emit(name, {
-      data: JSON.stringify(payload),
-    } as MessageEvent<string>);
+  function emit<T>(instance: MockWebSocket, payload: EventPayload<T>) {
+    instance.emit(payload);
   }
 
   it("routes server-sent events into the Svelte stores", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const disconnect = connectEvents();
-    const instance = MockEventSource.instances.at(-1)!;
+    const instance = MockWebSocket.instances.at(-1)!;
 
     const statusPayload: StatusPayload = {
       ...defaultStatus,
@@ -314,17 +350,17 @@ describe("stores", () => {
       artifacts: { csv_path: "status.csv" },
     };
 
-    emit(instance, "status", { type: "status", payload: statusPayload });
+    emit(instance, { type: "status", payload: statusPayload });
     expect(get(statusStore).state).toBe("running");
     expect(get(scoreboardStore)).toEqual(summary);
     expect(get(artifactsStore)).toEqual(statusPayload.artifacts);
 
-    emit(instance, "status", { type: "unknown", payload: {} });
+    emit(instance, { type: "unknown", payload: {} });
 
-    emit(instance, "run_started", { type: "run_started", payload: {} });
+    emit(instance, { type: "run_started", payload: {} });
     expect(get(messagesStore)[0].content).toBe("Run started");
 
-    emit(instance, "message", {
+    emit(instance, {
       type: "message",
       payload: {
         role: "assistant",
@@ -336,7 +372,7 @@ describe("stores", () => {
     });
     expect(get(messagesStore)).toHaveLength(2);
 
-    emit(instance, "message", {
+    emit(instance, {
       type: "message",
       payload: {
         role: "assistant",
@@ -345,7 +381,7 @@ describe("stores", () => {
     const latest = get(messagesStore).at(-1);
     expect(latest?.content).toBe("");
 
-    emit(instance, "judge", {
+    emit(instance, {
       type: "judge",
       payload: { asymmetry: "positive", notes: "Detailed notes" },
     });
@@ -353,27 +389,27 @@ describe("stores", () => {
     expect(judgeEntry?.content).toContain("Asymmetry: positive");
     expect(judgeEntry?.content).toContain("Notes: Detailed notes");
 
-    emit(instance, "judge", { type: "judge", payload: {} });
+    emit(instance, { type: "judge", payload: {} });
     expect(
       get(messagesStore).some(
         (msg) => msg.content === "Judge decision recorded.",
       ),
     ).toBe(true);
 
-    emit(instance, "summary", { type: "summary", payload: { summary } });
+    emit(instance, { type: "summary", payload: { summary } });
     expect(get(scoreboardStore)).toEqual(summary);
 
     const completionArtifacts: ArtifactsInfo = {
       csv_path: "complete.csv",
       runs_dir: "dir",
     };
-    emit(instance, "run_completed", {
+    emit(instance, {
       type: "run_completed",
       payload: { ...completionArtifacts, summary },
     });
     expect(get(artifactsStore)).toMatchObject(completionArtifacts);
 
-    emit(instance, "run_cancelled", {
+    emit(instance, {
       type: "run_cancelled",
       payload: { csv_path: "cancel.csv", runs_dir: "runs", summary },
     });
@@ -381,7 +417,7 @@ describe("stores", () => {
       get(messagesStore).some((msg) => msg.content === "Run cancelled."),
     ).toBe(true);
 
-    emit(instance, "artifacts", {
+    emit(instance, {
       type: "artifacts",
       payload: { csv_path: "direct.csv" },
     });
@@ -390,14 +426,14 @@ describe("stores", () => {
     const parseErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
-    instance.emit("message", { data: "not-json" } as MessageEvent<string>);
+    instance.emitRaw("not-json");
     expect(parseErrorSpy).toHaveBeenCalledWith(
-      "Failed to parse SSE payload",
+      "Failed to parse WebSocket message",
       expect.anything(),
     );
     parseErrorSpy.mockRestore();
 
-    instance.emit("error", { type: "error" });
+    instance.triggerError({ type: "error" } as Event);
     expect(warnSpy).toHaveBeenCalled();
 
     disconnect();
@@ -407,16 +443,58 @@ describe("stores", () => {
 
   it("replaces an existing event source when reconnecting", () => {
     const first = connectEvents();
-    const firstInstance = MockEventSource.instances.at(-1)!;
+    const firstInstance = MockWebSocket.instances.at(-1)!;
 
     const second = connectEvents();
-    const secondInstance = MockEventSource.instances.at(-1)!;
+    const secondInstance = MockWebSocket.instances.at(-1)!;
 
     expect(firstInstance.closed).toBe(true);
     expect(secondInstance).not.toBe(firstInstance);
 
     first();
     second();
+  });
+
+  it("restarts the ping timer on repeated open events", () => {
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
+
+    instance.triggerOpen();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+
+    disconnect();
+  });
+
+  it("uses wss when the page is served over https", () => {
+    const originalLocation = window.location;
+    const secureLocation = {
+      protocol: "https:",
+      host: "secure.example",
+    } as Location;
+    Object.defineProperty(window, "location", {
+      value: secureLocation,
+      configurable: true,
+      writable: true,
+    });
+
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    try {
+      expect(instance.url).toBe("wss://secure.example/api/ws");
+    } finally {
+      disconnect();
+      Object.defineProperty(window, "location", {
+        value: originalLocation,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 
   it("falls back when crypto.randomUUID is unavailable", () => {
@@ -427,8 +505,8 @@ describe("stores", () => {
     });
 
     const disconnect = connectEvents();
-    const instance = MockEventSource.instances.at(-1)!;
-    emit(instance, "message", {
+    const instance = MockWebSocket.instances.at(-1)!;
+    emit(instance, {
       type: "message",
       payload: { content: "no crypto" },
     });
@@ -515,5 +593,151 @@ describe("stores", () => {
     expect(isActiveState("paused")).toBe(true);
     expect(isActiveState("cancelling")).toBe(true);
     expect(isActiveState("completed")).toBe(false);
+  });
+
+  it("manages WebSocket connection states", () => {
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    expect(get(connectionStore)).toBe("connecting");
+
+    instance.triggerOpen();
+    expect(get(connectionStore)).toBe("connected");
+
+    instance.serverClose();
+    expect(get(connectionStore)).toBe("error");
+
+    disconnect();
+  });
+
+  it("reconnects on server close with exponential backoff", async () => {
+    useFakeTimersWithTimerSpies();
+    const disconnect = connectEvents();
+    const firstInstance = MockWebSocket.instances.at(-1)!;
+
+    firstInstance.triggerOpen();
+    expect(get(connectionStore)).toBe("connected");
+
+    firstInstance.serverClose();
+    expect(get(connectionStore)).toBe("error");
+
+    // First reconnect attempt after 1 second
+    await vi.advanceTimersByTimeAsync(1000);
+    const secondInstance = MockWebSocket.instances.at(-1)!;
+    expect(secondInstance).not.toBe(firstInstance);
+
+    secondInstance.triggerOpen();
+    expect(get(connectionStore)).toBe("connected");
+
+    secondInstance.serverClose();
+    expect(get(connectionStore)).toBe("error");
+
+    // Second reconnect attempt after 2 seconds
+    await vi.advanceTimersByTimeAsync(2000);
+    const thirdInstance = MockWebSocket.instances.at(-1)!;
+    expect(thirdInstance).not.toBe(secondInstance);
+
+    disconnect();
+    vi.useRealTimers();
+  });
+
+  it("stops reconnecting on manual disconnect", () => {
+    useFakeTimersWithTimerSpies();
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    instance.serverClose();
+
+    disconnect(); // Manual disconnect
+
+    // Advance time - should not create new connections
+    vi.advanceTimersByTime(1000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it("sends ping messages every 20 seconds when connected", () => {
+    useFakeTimersWithTimerSpies();
+    const sendSpy = vi.spyOn(MockWebSocket.prototype, "send");
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+
+    // Advance 20 seconds
+    vi.advanceTimersByTime(20000);
+    expect(sendSpy).toHaveBeenCalledWith(
+      JSON.stringify({ type: "ping", payload: {} }),
+    );
+
+    // Advance another 20 seconds
+    vi.advanceTimersByTime(20000);
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+
+    disconnect();
+    vi.useRealTimers();
+  });
+
+  it("cleans up ping timer on disconnect", () => {
+    useFakeTimersWithTimerSpies();
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+    disconnect();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it("cleans up ping timer on connection error", () => {
+    useFakeTimersWithTimerSpies();
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+    instance.triggerError();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+    disconnect();
+    vi.useRealTimers();
+  });
+
+  it("cleans up ping timer on server close", () => {
+    useFakeTimersWithTimerSpies();
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+    instance.serverClose();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+    disconnect();
+    vi.useRealTimers();
+  });
+
+  it("clears a pending reconnect timer when an error occurs", () => {
+    useFakeTimersWithTimerSpies();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const disconnect = connectEvents();
+    const instance = MockWebSocket.instances.at(-1)!;
+
+    instance.triggerOpen();
+    instance.serverClose();
+
+    instance.triggerError();
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+
+    clearTimeoutSpy.mockRestore();
+    disconnect();
+    vi.useRealTimers();
   });
 });

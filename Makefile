@@ -4,12 +4,11 @@ UV ?= uv
 UV_RUN ?= $(UV) run --extra dev
 PRECOMMIT_HOOK ?= .git/hooks/pre-commit
 WEBUI_NPM ?= npm
-GUNICORN ?= gunicorn
-GUNICORN_BIND ?= 0.0.0.0:5000
-GUNICORN_WORKER_CLASS ?= gevent
-GUNICORN_WORKERS ?= 1
-GUNICORN_WORKER_CONNECTIONS ?= 1000
-GUNICORN_PID_FILE ?= .gunicorn-web.pid
+UVICORN ?= uvicorn
+UVICORN_HOST ?= 0.0.0.0
+UVICORN_PORT ?= 5000
+UVICORN_WORKERS ?= 1
+UVICORN_PID_FILE ?= .uvicorn-web.pid
 DEVSTACK ?= $(UV_RUN) python -m llm_judge.devstack
 DEVSTACK_BACKEND_HOST ?= 127.0.0.1
 DEVSTACK_BACKEND_PORT ?= 5000
@@ -128,24 +127,25 @@ web-build:
 	cd webui && $(WEBUI_NPM) run build
 
 web: web-build
-	$(GUNICORN) llm_judge.webapp:app --worker-class gevent --workers $(GUNICORN_WORKERS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --bind $(GUNICORN_BIND)
+	$(UV_RUN) $(UVICORN) llm_judge.webapp:app --host $(UVICORN_HOST) --port $(UVICORN_PORT) --workers $(UVICORN_WORKERS)
 
 webd: web-build
-	@PID_FILE=$(GUNICORN_PID_FILE); \
+	@PID_FILE=$(UVICORN_PID_FILE); \
 	if [ -f $$PID_FILE ] && kill -0 "$$(cat $$PID_FILE)" 2>/dev/null; then \
-		echo "Gunicorn already running with PID $$(cat $$PID_FILE). Stop it with 'kill $$(cat $$PID_FILE)' first."; \
+		echo "Uvicorn already running with PID $$(cat $$PID_FILE). Stop it with 'kill $$(cat $$PID_FILE)' first."; \
 		exit 1; \
 	fi; \
-		$(GUNICORN) llm_judge.webapp:app --worker-class gevent --workers $(GUNICORN_WORKERS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --bind $(GUNICORN_BIND) --daemon --pid $$PID_FILE; \
-		while [ ! -f $$PID_FILE ]; do sleep 0.1; done; \
+		nohup $(UV_RUN) $(UVICORN) llm_judge.webapp:app --host $(UVICORN_HOST) --port $(UVICORN_PORT) --workers $(UVICORN_WORKERS) > /dev/null 2>&1 & \
+		echo $$! > $$PID_FILE; \
+		sleep 1; \
 		PID=$$(cat $$PID_FILE); \
-		URL=$$(echo "$(GUNICORN_BIND)" | sed 's/^0\.0\.0\.0/127.0.0.1/'); \
+		URL=$$(echo "$(UVICORN_HOST):$(UVICORN_PORT)" | sed 's/^0\.0\.0\.0/127.0.0.1/'); \
 		echo "Web dashboard available at http://$$URL/"; \
 		echo "Stop it with 'kill $$PID'."
 
 webdev:
 	@trap 'kill 0' EXIT INT TERM; \
-	PYTHONUNBUFFERED=1 $(UV_RUN) python -m gunicorn llm_judge.webapp:app --worker-class $(GUNICORN_WORKER_CLASS) --worker-connections $(GUNICORN_WORKER_CONNECTIONS) --workers $(GUNICORN_WORKERS) --bind 0.0.0.0:5000 --reload & \
+	PYTHONUNBUFFERED=1 $(UV_RUN) $(UVICORN) llm_judge.webapp:app --host 0.0.0.0 --port 5000 --reload & \
 	cd webui && $(WEBUI_NPM) install && $(WEBUI_NPM) run dev -- --host 0.0.0.0 --port 5173
 
 devstack-start: web-build

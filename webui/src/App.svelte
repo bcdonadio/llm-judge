@@ -5,8 +5,10 @@
   import {
     artifactsStore,
     connectEvents,
+    connectionStore,
     initializeStores,
   } from "@/lib/stores";
+  import type { ConnectionState } from "@/lib/stores";
 
   let disconnect = $state<(() => void) | null>(null);
   let loaded = $state(false);
@@ -33,6 +35,7 @@
   });
 
   const artifacts = $derived($artifactsStore);
+  const connectionStatus = $derived($connectionStore) as ConnectionState;
 </script>
 
 <div class="app-shell">
@@ -45,6 +48,10 @@
     </div>
     <div class="chat-wrapper">
       <ChatWindow />
+    </div>
+    <div class="connection-status" data-state={connectionStatus}>
+      <!-- c8 ignore next -->
+      Connection: {connectionStatus}
     </div>
     {#if artifacts?.csv_path}
       <section class="artifacts">
@@ -117,6 +124,12 @@
   .chat-wrapper :global(.chat-window) {
     flex: 1;
     min-height: 0;
+  }
+
+  .connection-status {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+    justify-self: end;
   }
 
   .artifacts {

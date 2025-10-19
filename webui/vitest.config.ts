@@ -13,7 +13,7 @@ export default mergeConfig(
         reporter: ["text", "html", "lcov"],
         reportsDirectory: "./coverage",
         include: ["src/**/*.{ts,svelte}"],
-        exclude: ["src/main.ts"],
+        exclude: ["src/main.ts", "src/**/*.d.ts", "src/lib/types.ts"],
       },
     },
   }),

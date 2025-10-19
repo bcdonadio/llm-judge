@@ -332,16 +332,18 @@ def test_serve_backend_exit(base_config: devstack.DevStackConfig, monkeypatch: p
     assert backend_cmd[0:4] == [
         base_config.python_executable,
         "-m",
-        "gunicorn",
+        "uvicorn",
         base_config.wsgi_app,
     ]
     assert "--reload" in backend_cmd
-    bind_arg = backend_cmd[backend_cmd.index("--bind") + 1]
-    assert bind_arg == f"{base_config.backend_host}:{base_config.backend_port}"
-    worker_class = backend_cmd[backend_cmd.index("--worker-class") + 1]
-    assert worker_class == base_config.gunicorn_worker_class
-    worker_connections = backend_cmd[backend_cmd.index("--worker-connections") + 1]
-    assert worker_connections == str(base_config.gunicorn_worker_connections)
+    # Check for host and port in uvicorn format
+    host_arg = backend_cmd[backend_cmd.index("--host") + 1]
+    assert host_arg == base_config.backend_host
+    port_arg = backend_cmd[backend_cmd.index("--port") + 1]
+    assert port_arg == str(base_config.backend_port)
+    # Check for workers argument
+    workers_arg = backend_cmd[backend_cmd.index("--workers") + 1]
+    assert workers_arg == str(base_config.uvicorn_workers)
 
 
 def test_serve_frontend_exit(base_config: devstack.DevStackConfig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -627,7 +629,7 @@ def test_stop_devstack_still_alive_timeout(
     monkeypatch.setattr(devstack, "process_alive", _always_true)
 
     def fake_time() -> float:
-        return next(time_values)
+        return float(next(time_values))
 
     monkeypatch.setattr(devstack.time, "time", fake_time)
     monkeypatch.setattr(devstack.time, "sleep", _noop_sleep)

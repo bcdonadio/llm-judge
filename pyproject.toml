@@ -8,9 +8,9 @@ dependencies = [
     "openai>=2.2.0",
     "httpx[http2]>=0.28.1",
     "colorama>=0.4.6",
-    "Flask>=3.0.3",
-    "gevent>=24.2.1",
-    "gunicorn>=21.2.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.0",
 ]
 
 [project.optional-dependencies]
@@ -80,6 +80,10 @@ addopts = [
 timeout = 30
 timeout_method = "thread"
 pythonpath = ["src", "."]
+markers = [
+    "asyncio: tests that require an asyncio event loop",
+    "anyio: tests that require an anyio-managed event loop",
+]
 
 [tool.coverage.run]
 branch = true
@@ -96,5 +100,5 @@ fail_under = 95
 [tool.vulture]
 paths = ["src", "judge.py"]
 exclude = ["src/llm_judge/webapp/static", "results"]
-ignore_decorators = ["@app.route", "@app.get", "@app.post", "@bp.route", "@bp.get", "@bp.post"]
+ignore_decorators = ["@app.get", "@app.post"]
 min_confidence = 80
