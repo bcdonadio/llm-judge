@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, cast
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -281,6 +281,13 @@ def _register_health_routes(app: FastAPI) -> None:
 def _register_control_routes(app: FastAPI) -> None:
     """Register run control endpoints."""
 
+    _register_run_endpoint(app)
+    _register_pause_endpoint(app)
+    _register_resume_endpoint(app)
+    _register_cancel_endpoint(app)
+
+
+def _register_run_endpoint(app: FastAPI) -> None:
     @app.post("/api/run", response_model=RunResponse, tags=["control"])
     async def api_start_run(request: RunRequest) -> RunResponse:
         """Start a new run with the provided configuration."""
@@ -294,6 +301,8 @@ def _register_control_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A run is already in progress")
         return RunResponse(status="started", config=cfg)
 
+
+def _register_pause_endpoint(app: FastAPI) -> None:
     @app.post("/api/pause", response_model=ActionResponse, tags=["control"])
     async def api_pause() -> ActionResponse:
         """Pause the current run."""
@@ -302,6 +311,8 @@ def _register_control_routes(app: FastAPI) -> None:
             return ActionResponse(status="paused")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active run to pause.")
 
+
+def _register_resume_endpoint(app: FastAPI) -> None:
     @app.post("/api/resume", response_model=ActionResponse, tags=["control"])
     async def api_resume() -> ActionResponse:
         """Resume a paused run."""
@@ -310,6 +321,8 @@ def _register_control_routes(app: FastAPI) -> None:
             return ActionResponse(status="running")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No paused run to resume.")
 
+
+def _register_cancel_endpoint(app: FastAPI) -> None:
     @app.post("/api/cancel", response_model=ActionResponse, tags=["control"])
     async def api_cancel() -> ActionResponse:
         """Cancel the current run."""
@@ -364,39 +377,53 @@ def _register_websocket_routes(app: FastAPI) -> None:
 def _register_frontend_routes(app: FastAPI, dist_dir: Path) -> None:
     """Register frontend static file serving routes."""
     if not dist_dir.exists():
-
-        @app.get("/", include_in_schema=False)
-        async def frontend_missing() -> JSONResponse:
-            """Fallback when frontend is not built."""
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "error": "Frontend assets not found.",
-                    "hint": "Run `npm install && npm run build` inside webui/.",
-                },
-            )
-
+        _register_frontend_missing_route(app)
         return
 
-    # Mount static files directory
+    _mount_frontend_assets(app, dist_dir)
+    _register_frontend_handler(app, dist_dir)
+
+
+def _register_frontend_missing_route(app: FastAPI) -> None:
+    @app.get("/", include_in_schema=False)
+    async def frontend_missing() -> JSONResponse:
+        """Fallback when frontend is not built."""
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": "Frontend assets not found.",
+                "hint": "Run `npm install && npm run build` inside webui/.",
+            },
+        )
+
+
+def _mount_frontend_assets(app: FastAPI, dist_dir: Path) -> None:
+    """Mount the static assets directory for the SPA."""
+
     app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
 
-    # Serve index.html for SPA routing
+
+def _register_frontend_handler(app: FastAPI, dist_dir: Path) -> None:
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_frontend(full_path: str) -> FileResponse:
+    async def serve_frontend(full_path: str, request: Request) -> FileResponse:
         """Serve frontend files with SPA fallback to index.html."""
-        # Security: prevent path traversal
+        raw_path = request.scope.get("raw_path", b"")
+        raw_path_lower = raw_path.lower() if isinstance(raw_path, (bytes, bytearray)) else b""
+        if b"/../" in raw_path_lower or b"..%2f" in raw_path_lower:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
+
+        if ".." in PurePosixPath(full_path).parts:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
+
         requested_path = (dist_dir / full_path).resolve()
         try:
             requested_path.relative_to(dist_dir)
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
 
-        # Serve the file if it exists
         if requested_path.is_file():
             return FileResponse(requested_path)
 
-        # SPA fallback to index.html
         index_path = dist_dir / "index.html"
         if index_path.exists():
             return FileResponse(index_path)
@@ -460,7 +487,6 @@ def create_app(
     app.state.websocket_manager = websocket_manager
     app.state.config = app_config
     outdir_str = str(manager.outdir)
-    print(f"[Artifacts] Using output directory: {outdir_str}")
     logging.getLogger(__name__).info("[Artifacts] Using output directory: %s", outdir_str)
 
     # Configure CORS

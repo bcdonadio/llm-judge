@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, Dict, List, cast
 
 import pytest
@@ -33,10 +34,6 @@ def test_websocket_manager_connect_send_and_keepalive() -> None:
         await manager.connect(cast(WebSocket, websocket))
         assert websocket.accepted
 
-        background = asyncio.create_task(asyncio.sleep(1))
-        background_tasks = getattr(manager, "_background_tasks")
-        background_tasks[cast(WebSocket, websocket)] = background
-
         sender = asyncio.create_task(
             manager.send_events(
                 cast(WebSocket, websocket), initial_events=[{"type": "status", "payload": {"state": "idle"}}]
@@ -60,7 +57,19 @@ def test_websocket_manager_connect_send_and_keepalive() -> None:
         await asyncio.sleep(0.01)
         event_queues = getattr(manager, "_event_queues")
         assert cast(WebSocket, websocket) not in event_queues
-        assert background.cancelled()
+
+    asyncio.run(run())
+
+
+def test_websocket_manager_connect_without_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> None:
+        manager = WebSocketManager()
+        websocket = StubWebSocket()
+
+        monkeypatch.setattr(WebSocketManager, "_current_running_loop", staticmethod(lambda: None))
+
+        await manager.connect(cast(WebSocket, websocket))
+        assert websocket.accepted
 
     asyncio.run(run())
 
@@ -78,18 +87,15 @@ def test_websocket_manager_send_events_without_queue(caplog: pytest.LogCaptureFi
     asyncio.run(run())
 
 
-def test_websocket_manager_disconnect_handles_completed_task() -> None:
+def test_websocket_manager_disconnect_removes_queue() -> None:
     async def run() -> None:
         manager = WebSocketManager()
         websocket = StubWebSocket()
 
         await manager.connect(cast(WebSocket, websocket))
-        background = asyncio.create_task(asyncio.sleep(0))
-        await background
-        background_tasks = getattr(manager, "_background_tasks")
-        background_tasks[cast(WebSocket, websocket)] = background
-
         await manager.disconnect(cast(WebSocket, websocket))
+        event_queues = getattr(manager, "_event_queues")
+        assert cast(WebSocket, websocket) not in event_queues
 
     asyncio.run(run())
 
@@ -100,34 +106,43 @@ def test_websocket_manager_publish_requires_type() -> None:
         manager.publish({"payload": {}})
 
 
-def test_websocket_manager_publish_without_running_loop(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_websocket_manager_publish_without_running_loop(caplog: pytest.LogCaptureFixture) -> None:
     manager = WebSocketManager()
-
-    class DummyLoop:
-        def is_running(self) -> bool:
-            return False
-
-    monkeypatch.setattr(asyncio, "get_event_loop", lambda: DummyLoop())
 
     with caplog.at_level("WARNING"):
         manager.publish({"type": "status", "payload": {}})
 
-    assert "No event loop running" in caplog.text
+    assert "No running event loop" in caplog.text
 
 
-def test_websocket_manager_publish_runtime_error(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    manager = WebSocketManager()
+def test_websocket_manager_publish_from_thread() -> None:
+    async def run() -> None:
+        manager = WebSocketManager()
+        websocket = StubWebSocket()
 
-    def raise_runtime_error() -> Any:
-        raise RuntimeError("no loop")
+        await manager.connect(cast(WebSocket, websocket))
+        sender = asyncio.create_task(manager.send_events(cast(WebSocket, websocket)))
 
-    monkeypatch.setattr(asyncio, "get_event_loop", raise_runtime_error)
+        published = threading.Event()
 
-    with caplog.at_level("WARNING"):
-        manager.publish({"type": "status", "payload": {}})
+        def publish_from_thread() -> None:
+            manager.publish({"type": "message", "payload": {"source": "thread"}})
+            published.set()
 
-    assert "Could not get event loop" in caplog.text
+        thread = threading.Thread(target=publish_from_thread)
+        thread.start()
+        thread.join()
+        assert published.wait(timeout=1)
+
+        await asyncio.sleep(0.05)
+        assert any(event["type"] == "message" for event in websocket.sent)
+
+        sender.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sender
+
+        await asyncio.sleep(0.01)
+        event_queues = getattr(manager, "_event_queues")
+        assert cast(WebSocket, websocket) not in event_queues
+
+    asyncio.run(run())

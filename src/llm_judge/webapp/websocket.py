@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any, Dict, List
 from weakref import WeakSet
 
@@ -25,7 +26,8 @@ class WebSocketManager:
         self._connections: WeakSet[WebSocket] = WeakSet()
         self._event_queues: Dict[WebSocket, asyncio.Queue[Dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
-        self._background_tasks: Dict[WebSocket, asyncio.Task[None]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_guard = threading.Lock()
 
     async def connect(self, websocket: WebSocket) -> None:
         """Register a new WebSocket connection.
@@ -37,6 +39,9 @@ class WebSocketManager:
         async with self._lock:
             self._connections.add(websocket)
             self._event_queues[websocket] = asyncio.Queue()
+            loop = self._current_running_loop()
+            if loop is not None:
+                self._remember_loop(loop)
         LOGGER.debug("WebSocket client connected. Total connections: %d", len(self._event_queues))
 
     async def disconnect(self, websocket: WebSocket) -> None:
@@ -46,12 +51,7 @@ class WebSocketManager:
             websocket: The WebSocket connection to unregister
         """
         async with self._lock:
-            if websocket in self._event_queues:
-                del self._event_queues[websocket]
-            if websocket in self._background_tasks:
-                task = self._background_tasks.pop(websocket)
-                if not task.done():
-                    task.cancel()
+            self._event_queues.pop(websocket, None)
         LOGGER.debug("WebSocket client disconnected. Total connections: %d", len(self._event_queues))
 
     def publish(self, event: Dict[str, Any]) -> None:
@@ -69,16 +69,21 @@ class WebSocketManager:
         if "type" not in event:
             raise ValueError("WebSocket events must include a 'type' field.")
 
-        # Schedule the async broadcast without awaiting
+        running_loop = self._current_running_loop()
+        if running_loop is not None:
+            running_loop.create_task(self._async_publish(event))
+            self._remember_loop(running_loop)
+            return
+
+        loop = self._get_stored_loop()
+        if loop is None or not loop.is_running():
+            LOGGER.warning("No running event loop, cannot publish WebSocket event")
+            return
+
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(self._async_publish(event))
-            else:
-                # If no loop is running, we can't publish
-                LOGGER.warning("No event loop running, cannot publish WebSocket event")
-        except RuntimeError:
-            LOGGER.warning("Could not get event loop for WebSocket publish")
+            asyncio.run_coroutine_threadsafe(self._async_publish(event), loop)
+        except RuntimeError as exc:  # pragma: no cover - loop closed during shutdown
+            LOGGER.warning("Failed to schedule WebSocket publish on stored loop: %s", exc)
 
     async def _async_publish(self, event: Dict[str, Any]) -> None:
         """Internal async method to publish events to all clients.
@@ -114,27 +119,12 @@ class WebSocketManager:
                 for event in initial_events:
                     await self._send_event(websocket, event)
 
-            # Get the event queue for this connection
             queue = self._event_queues.get(websocket)
             if queue is None:
                 LOGGER.warning("No event queue found for WebSocket connection")
                 return
 
-            # Send events from queue with keepalive
-            while True:
-                try:
-                    # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(queue.get(), timeout=self._keepalive)
-                    await self._send_event(websocket, event)
-                except asyncio.TimeoutError:
-                    # Send ping/keepalive message
-                    await self._send_event(
-                        websocket,
-                        {
-                            "type": "ping",
-                            "payload": {"ts": self._time_now_ms()},
-                        },
-                    )
+            await self._stream_events(websocket, queue)
 
         except Exception as exc:  # pragma: no cover
             LOGGER.debug("WebSocket send loop ended: %s", exc)
@@ -154,6 +144,23 @@ class WebSocketManager:
         }
         await websocket.send_json(message)
 
+    async def _stream_events(self, websocket: WebSocket, queue: asyncio.Queue[Dict[str, Any]]) -> None:
+        """Continuously forward queued events or keepalive pings."""
+
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=self._keepalive)
+            except asyncio.TimeoutError:
+                await self._send_event(
+                    websocket,
+                    {
+                        "type": "ping",
+                        "payload": {"ts": self._time_now_ms()},
+                    },
+                )
+            else:
+                await self._send_event(websocket, event)
+
     @staticmethod
     def _time_now_ms() -> int:
         """Return current timestamp in milliseconds.
@@ -164,3 +171,20 @@ class WebSocketManager:
         import time
 
         return int(time.time() * 1000)
+
+    def _remember_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        with self._loop_guard:
+            if self._loop is None:
+                self._loop = loop
+
+    def _get_stored_loop(self) -> asyncio.AbstractEventLoop | None:
+        with self._loop_guard:
+            return self._loop
+
+    @staticmethod
+    def _current_running_loop() -> asyncio.AbstractEventLoop | None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        return loop if loop.is_running() else None

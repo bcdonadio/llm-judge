@@ -236,14 +236,20 @@ def test_serve_frontend_static_and_security(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.content == b"console.log('hi')"
 
-    # Test path traversal - FastAPI normalizes paths before the handler,
-    # so attempts like /../ get normalized and fall back to index.html (SPA behavior)
-    # This is secure because the actual security check (resolve + relative_to) prevents
-    # accessing files outside dist_dir
+    # Test path traversal - FastAPI normalizes the direct "../" path but our guard still
+    # ensures the response falls back to the SPA shell rather than leaking files.
     traversal = client.get("/../../secret.txt")
     assert traversal.status_code == 200
-    # Should fall back to index.html, not access files outside dist_dir
     assert b"<html>ok</html>" in traversal.content
+
+    # Encoded traversal should be rejected with an explicit 400 error.
+    encoded = client.get("/..%2F..%2Fsecret.txt")
+    assert encoded.status_code == 400
+    assert encoded.json()["detail"] == "Invalid path"
+
+    absolute = client.get("/%2Fetc/passwd")
+    assert absolute.status_code == 400
+    assert absolute.json()["detail"] == "Invalid path"
 
     fallback = client.get("/")
     assert fallback.status_code == 200
