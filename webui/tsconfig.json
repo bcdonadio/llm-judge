@@ -7,7 +7,6 @@
     "useDefineForClassFields": true,
     "lib": ["DOM", "DOM.Iterable", "ES2024"],
     "types": ["vite/client", "node", "vitest"],
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }
