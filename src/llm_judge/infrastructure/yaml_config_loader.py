@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import threading
 from pathlib import Path
@@ -92,6 +93,10 @@ class YAMLConfigLoader:
     def load(self) -> None:
         """Load the configuration from YAML file."""
         with self._lock:
+            # Early return if already loaded
+            if self._loaded:
+                return
+
             config_file = self._find_config_file()
 
             with open(config_file, "r", encoding="utf-8") as f:
@@ -134,12 +139,12 @@ class YAMLConfigLoader:
         """Get all configuration as a dictionary.
 
         Returns:
-            Copy of entire configuration
+            Deep copy of entire configuration to prevent mutation of internal state
         """
         with self._lock:
             if not self._loaded:
                 self.load()
-            return self._config.copy()
+            return copy.deepcopy(self._config)
 
 
 def load_config(config_path: Optional[Path] = None, use_example: bool = False) -> YAMLConfigLoader:

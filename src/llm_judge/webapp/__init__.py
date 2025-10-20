@@ -110,6 +110,28 @@ def _load_supported_models(
     base_url: str,
     api_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Load the list of supported models from the OpenRouter API.
+
+    Args:
+        container: Optional DI container to resolve IAPIClient. If provided and
+            DI support is available, attempts to resolve an API client from the container.
+        base_url: The base URL for the OpenRouter API.
+        api_key: API key to use for authentication. If not provided, the function
+            attempts to resolve an API client from the container. If neither is available,
+            returns an empty list.
+
+    Returns:
+        List of model dictionaries from the API. Returns an empty list if no API key
+        is configured or if an error occurs during model loading.
+
+    Behavior:
+        - First attempts to resolve IAPIClient from the container if provided
+        - If no client is resolved and api_key is provided, creates a temporary
+          OpenRouterClient with the provided API key
+        - If neither an API client nor api_key is available, returns an empty list
+          and logs an informational message
+        - On API errors, returns an empty list and logs a warning
+    """
     logger = logging.getLogger(__name__)
     api_client: IAPIClient | None = None
     close_client = False
