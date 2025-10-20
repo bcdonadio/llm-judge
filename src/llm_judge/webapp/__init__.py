@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
@@ -160,6 +161,7 @@ def _setup_app_config(
 
     # Get or set default base URL
     openrouter_base_url = app_config.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    app_config.setdefault("OPENROUTER_BASE_URL", openrouter_base_url)
 
     outdir_value = app_config.get("RUNS_OUTDIR")
     if outdir_value is None:
@@ -450,11 +452,18 @@ def create_app(
     if not api_key or api_key == "your_api_key_here":
         api_key = None
 
+    # Export API key to environment for runtime requests
+    if api_key:
+        os.environ["OPENROUTER_API_KEY"] = api_key
+
     # Override with YAML config if not provided in app config
     if "OPENROUTER_BASE_URL" not in app_config:
         yaml_endpoint = yaml_config.get("inference.endpoint")
         if yaml_endpoint:
-            openrouter_base_url = yaml_endpoint.rstrip("/") + "/v1"
+            if not yaml_endpoint.rstrip("/").endswith("/v1"):
+                openrouter_base_url = yaml_endpoint.rstrip("/") + "/v1"
+            else:
+                openrouter_base_url = yaml_endpoint
             app_config["OPENROUTER_BASE_URL"] = openrouter_base_url
 
     runner_factory_fn = _setup_runner_factory(container)

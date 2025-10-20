@@ -8,7 +8,7 @@ listen:
 inference:
   endpoint: https://openrouter.ai/api
   key: your_api_key_here
-retries:
+  retries:
     max: 3
     timeout: 30
 log_level: DEBUG
