@@ -1,0 +1,19 @@
+listen:
+  frontend:
+    host: 0.0.0.0
+    port: 5173
+  proxy:
+    host: 0.0.0.0
+    port: 5000
+inference:
+  endpoint: https://openrouter.ai/api
+  key: your_api_key_here
+  retries:
+    max: 3
+    timeout: 30
+log_level: DEBUG
+defaults:
+  max_rounds: 1
+  judge: x-ai/grok-4-fast
+  models:
+    - qwen/qwen3-next-80b-a3b-instruct
