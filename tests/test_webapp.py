@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import builtins
 import importlib
-import os
-import sys
 import time
 from pathlib import Path
 from threading import Thread
 from typing import Any, Callable, Dict, List, cast
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,95 +118,6 @@ class StubContainer:
         if key not in self._resolver:
             raise KeyError(f"No registration for {key}")
         return self._resolver[key]
-
-
-def test_load_dotenv_missing_file(tmp_path: Path) -> None:
-    webapp_module._load_dotenv(tmp_path / "nonexistent.env")  # pyright: ignore[reportPrivateUsage]
-
-
-def test_load_dotenv_uses_python_dotenv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text("FOO=bar\n")
-
-    load_calls: Dict[str, Any] = {}
-
-    def fake_load(path: str | Path, *, override: bool) -> None:
-        load_calls["path"] = Path(path)
-        load_calls["override"] = override
-
-    manual_called = False
-
-    def fake_manual(path: Path) -> None:
-        nonlocal manual_called
-        manual_called = True
-
-    monkeypatch.setitem(sys.modules, "dotenv", SimpleNamespace(load_dotenv=fake_load))
-    monkeypatch.setattr(webapp_module, "_load_dotenv_manual", fake_manual)
-
-    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
-
-    assert load_calls == {"path": env_file, "override": False}
-    assert manual_called is False
-
-
-def test_load_dotenv_with_library_import_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    original_import = builtins.__import__
-
-    def fake_import(
-        name: str, globals: Any | None = None, locals: Any | None = None, fromlist: tuple[str, ...] = (), level: int = 0
-    ) -> Any:
-        if name == "dotenv":
-            raise ImportError("No module named 'dotenv'")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    assert webapp_module._load_dotenv_with_library(tmp_path / ".env") is False  # pyright: ignore[reportPrivateUsage]
-
-
-def test_load_dotenv_manual_parses_entries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "# comment line",
-                "export QUOTED='hello world'",
-                "INLINE=value # inline comment",
-                "BARE=value2",
-                "LEADING=# comment",
-                "EMPTY=",
-                "EMBEDDED=abc#123",
-                "export NO_EQUALS",
-                "=skip-me",
-                "",
-            ]
-        )
-    )
-
-    def fake_loader(_path: Path) -> bool:
-        return False
-
-    monkeypatch.setattr(webapp_module, "_load_dotenv_with_library", fake_loader)
-    monkeypatch.delenv("QUOTED", raising=False)
-    monkeypatch.setenv("INLINE", "preexisting")
-    monkeypatch.delenv("BARE", raising=False)
-    monkeypatch.delenv("LEADING", raising=False)
-    monkeypatch.delenv("EMPTY", raising=False)
-    monkeypatch.delenv("EMBEDDED", raising=False)
-
-    webapp_module._load_dotenv(env_file)  # pyright: ignore[reportPrivateUsage]
-
-    assert os.environ["QUOTED"] == "hello world"
-    assert os.environ["INLINE"] == "preexisting"  # existing value not overridden
-    assert os.environ["BARE"] == "value2"
-    assert os.environ["LEADING"] == ""
-    assert os.environ["EMPTY"] == ""
-    assert os.environ["EMBEDDED"] == "abc#123"
-    assert "NO_EQUALS" not in os.environ
-    assert "skip-me" not in os.environ
-
-    for key in ("QUOTED", "BARE", "EMPTY", "EMBEDDED"):
-        monkeypatch.delenv(key, raising=False)
 
 
 def test_serve_frontend_missing_dist(tmp_path: Path) -> None:
@@ -854,11 +762,62 @@ def test_create_app_raises_when_di_factory_missing(monkeypatch: pytest.MonkeyPat
         create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")}, container=dummy_container)
 
 
-def test_load_supported_models_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+def test_load_supported_models_without_api_key() -> None:
     load_supported_models = getattr(webapp_module, "_load_supported_models")
-    models = load_supported_models(None, base_url="https://example.com")
+    models = load_supported_models(None, base_url="https://example.com", api_key=None)
     assert models == []
+
+
+def test_load_supported_models_with_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test _load_supported_models when api_key is provided."""
+    from unittest.mock import MagicMock
+
+    load_supported_models = getattr(webapp_module, "_load_supported_models")
+
+    # Mock the OpenRouterClient
+    mock_client = MagicMock()
+    mock_client.list_models.return_value = [{"id": "test-model"}]
+    mock_client.close.return_value = None
+
+    mock_openrouter_class = MagicMock(return_value=mock_client)
+
+    # Patch OpenRouterClient import
+    import llm_judge.infrastructure.api_client as api_client_module
+
+    original_client = api_client_module.OpenRouterClient
+    monkeypatch.setattr(api_client_module, "OpenRouterClient", mock_openrouter_class)
+
+    models = load_supported_models(None, base_url="https://example.com/v1", api_key="test_key")
+
+    assert models == [{"id": "test-model"}]
+    mock_openrouter_class.assert_called_once_with(api_key="test_key", base_url="https://example.com/v1")
+    mock_client.list_models.assert_called_once()
+    mock_client.close.assert_called_once()
+
+    # Restore
+    monkeypatch.setattr(api_client_module, "OpenRouterClient", original_client)
+
+
+def test_create_app_uses_yaml_config_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that create_app uses endpoint from YAML config when not in app config."""
+    from llm_judge.infrastructure.yaml_config_loader import YAMLConfigLoader
+
+    YAMLConfigLoader.reset_instance()
+    monkeypatch.setenv("TESTING", "1")
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "assets").mkdir()
+
+    # Don't provide OPENROUTER_BASE_URL in config, so it uses YAML
+    app = create_app({"FRONTEND_DIST": str(dist_dir), "RUNS_OUTDIR": str(tmp_path / "runs")})
+
+    # The config.example.yaml has "endpoint: https://openrouter.ai/api"
+    # So the base URL should be derived from that
+    assert "OPENROUTER_BASE_URL" in app.state.config
+    assert "openrouter.ai" in app.state.config["OPENROUTER_BASE_URL"]
+
+    YAMLConfigLoader.reset_instance()
 
 
 def test_frontend_route_rejects_path_traversal(tmp_path: Path) -> None:

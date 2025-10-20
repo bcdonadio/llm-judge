@@ -20,6 +20,7 @@ from .job_manager import JobManager
 from .websocket import WebSocketManager
 from ..runner import RunnerConfig, RunnerControl, RunnerEvent, LLMJudgeRunner
 from ..infrastructure.utility_services import FileSystemService
+from ..infrastructure.yaml_config_loader import load_config
 from ..services import IAPIClient
 
 if TYPE_CHECKING:
@@ -103,80 +104,34 @@ def _missing_frontend_response() -> JSONResponse:
     )
 
 
-def _load_dotenv(env_path: Path) -> None:
-    """Load key=value pairs from a dotenv file without overriding existing values."""
-    if not env_path.is_file():
-        return
-
-    if _load_dotenv_with_library(env_path):
-        return
-
-    _load_dotenv_manual(env_path)
-
-
-def _load_dotenv_with_library(env_path: Path) -> bool:
-    """Load dotenv via python-dotenv if available. Return True on success."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return False
-    load_dotenv(env_path, override=False)
-    return True
-
-
-def _load_dotenv_manual(env_path: Path) -> None:
-    """Minimal .env parser for environments without python-dotenv installed."""
-    for raw_line in env_path.read_text().splitlines():
-        parsed = _parse_env_line(raw_line)
-        if not parsed:
-            continue
-        key, value = parsed
-        if key in os.environ:
-            continue
-        os.environ[key] = value
-
-
-def _parse_env_line(raw_line: str) -> Optional[Tuple[str, str]]:
-    """Parse a single dotenv line into a key/value pair."""
-    line = raw_line.strip()
-    if not line or line.startswith("#"):
-        return None
-    if line.startswith("export "):
-        line = line[len("export ") :].strip()
-    if "=" not in line:
-        return None
-
-    key, value = line.split("=", 1)
-    key = key.strip()
-    if not key:
-        return None
-
-    value = _strip_inline_comment(_strip_quotes(value.strip()))
-    return key, value
-
-
-def _strip_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
-def _strip_inline_comment(value: str) -> str:
-    if "#" not in value:
-        return value
-    for idx, char in enumerate(value):
-        if char != "#":
-            continue
-        if idx == 0 or value[idx - 1].isspace():
-            return value[:idx].rstrip()
-    return value
-
-
 def _load_supported_models(
     container: Optional[ServiceContainerType],
     *,
     base_url: str,
+    api_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    """Load the list of supported models from the OpenRouter API.
+
+    Args:
+        container: Optional DI container to resolve IAPIClient. If provided and
+            DI support is available, attempts to resolve an API client from the container.
+        base_url: The base URL for the OpenRouter API.
+        api_key: API key to use for authentication. If not provided, the function
+            attempts to resolve an API client from the container. If neither is available,
+            returns an empty list.
+
+    Returns:
+        List of model dictionaries from the API. Returns an empty list if no API key
+        is configured or if an error occurs during model loading.
+
+    Behavior:
+        - First attempts to resolve IAPIClient from the container if provided
+        - If no client is resolved and api_key is provided, creates a temporary
+          OpenRouterClient with the provided API key
+        - If neither an API client nor api_key is available, returns an empty list
+          and logs an informational message
+        - On API errors, returns an empty list and logs a warning
+    """
     logger = logging.getLogger(__name__)
     api_client: IAPIClient | None = None
     close_client = False
@@ -189,9 +144,8 @@ def _load_supported_models(
             api_client = None
 
     if api_client is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
-            logger.info("Skipping OpenRouter model preload: OPENROUTER_API_KEY not configured.")
+            logger.info("Skipping OpenRouter model preload: API key not configured.")
             return []
         from ..infrastructure.api_client import OpenRouterClient
 
@@ -222,12 +176,14 @@ def _setup_app_config(
     """Configure application settings and paths."""
     app_config: Dict[str, Any] = {}
     app_config.setdefault("FRONTEND_DIST", str(frontend_dist))
-    openrouter_base_url = app_config.setdefault("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
+    # Merge provided config
     if config:
         app_config.update(config)
-        if "OPENROUTER_BASE_URL" in config:
-            openrouter_base_url = config["OPENROUTER_BASE_URL"]
+
+    # Get or set default base URL
+    openrouter_base_url = app_config.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    app_config.setdefault("OPENROUTER_BASE_URL", openrouter_base_url)
 
     outdir_value = app_config.get("RUNS_OUTDIR")
     if outdir_value is None:
@@ -505,13 +461,33 @@ def create_app(
         version="1.0.0",
     )
 
-    # Load environment variables
+    # Load configuration from YAML
     project_root = Path(__file__).resolve().parents[3]
-    _load_dotenv(project_root / ".env")
+    yaml_config = load_config()
     frontend_dist = project_root / "webui" / "dist"
 
     # Configure application
     app_config, openrouter_base_url, outdir_path = _setup_app_config(frontend_dist, config)
+
+    # Get API configuration from YAML
+    api_key = yaml_config.get("inference.key")
+    if not api_key or api_key == "your_api_key_here":
+        api_key = None
+
+    # Export API key to environment for runtime requests
+    if api_key:
+        os.environ["OPENROUTER_API_KEY"] = api_key
+
+    # Override with YAML config if not provided in app config
+    if "OPENROUTER_BASE_URL" not in app_config:
+        yaml_endpoint = yaml_config.get("inference.endpoint")
+        if yaml_endpoint:
+            if not yaml_endpoint.rstrip("/").endswith("/v1"):
+                openrouter_base_url = yaml_endpoint.rstrip("/") + "/v1"
+            else:
+                openrouter_base_url = yaml_endpoint
+            app_config["OPENROUTER_BASE_URL"] = openrouter_base_url
+
     runner_factory_fn = _setup_runner_factory(container)
     websocket_manager = _setup_websocket_manager()
 
@@ -529,7 +505,7 @@ def create_app(
     manager.set_websocket_manager(websocket_manager)
 
     # Load and configure models
-    models_catalog = _load_supported_models(container, base_url=openrouter_base_url)
+    models_catalog = _load_supported_models(container, base_url=openrouter_base_url, api_key=api_key)
     manager.set_supported_models(models_catalog)
     app_config["OPENROUTER_MODELS"] = models_catalog
 
