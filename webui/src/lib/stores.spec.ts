@@ -338,7 +338,7 @@ describe("stores", () => {
     instance.emit(payload);
   }
 
-  it("routes server-sent events into the Svelte stores", () => {
+  it("routes WebSocket events into the Svelte stores", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const disconnect = connectEvents();
     const instance = MockWebSocket.instances.at(-1)!;
