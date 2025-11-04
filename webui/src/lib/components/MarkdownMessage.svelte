@@ -21,6 +21,14 @@
     // Convert markdown to HTML
     const markdown = marked(content) as string;
 
+    // Add security hook to prevent reverse tabnabbing attacks
+    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      // Add rel='noopener noreferrer' to links with target='_blank'
+      if (node.tagName === "A" && node.getAttribute("target") === "_blank") {
+        node.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+
     // Sanitize HTML to prevent XSS attacks
     const sanitized = DOMPurify.sanitize(markdown, {
       ALLOWED_TAGS: [
@@ -49,6 +57,9 @@
       ],
       ALLOWED_ATTR: ["href", "title", "target", "rel"],
     });
+
+    // Remove the hook after sanitization to avoid memory leaks
+    DOMPurify.removeHook("afterSanitizeAttributes");
 
     return sanitized;
   });
