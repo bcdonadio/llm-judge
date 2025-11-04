@@ -11,7 +11,7 @@ LLM Judge is a command-line test harness that measures alignment and bias in LLM
 - Runs the curated prompt suite against one or more OpenRouter models.
 - Captures raw completions and judge decisions as JSON artifacts.
 - Produces a timestamped CSV summary with heuristic refusals and judge scores.
-- Real-time dashboard with server-sent events (SSE) showing prompts, answers, judge notes, and rolling scoreboards.
+- Real-time dashboard with WebSocket streaming showing prompts, answers, judge notes, and rolling scoreboards.
 - Ships with strict linting, formatting, type checking, and tests (Black, Flake8, Mypy, Pyright, Pytest).
 
 ## Installation
@@ -42,7 +42,7 @@ By default the CLI and dashboard target `qwen/qwen3-next-80b-a3b-instruct` as th
 
 ### Web dashboard
 
-A live control panel is bundled in `webui/`. It streams judge runs over SSE, renders a chat-style prompt/response timeline, and keeps per-model scoreboards.
+A live control panel is bundled in `webui/`. It streams judge runs over a WebSocket connection, renders a chat-style prompt/response timeline, and keeps per-model scoreboards.
 
 ```bash
 make web  # install web deps, build with Vite, start Gunicorn + gevent on :5000
