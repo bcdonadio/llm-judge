@@ -2,6 +2,7 @@
   import { onDestroy, tick } from "svelte";
   import { messagesStore } from "@/lib/stores";
   import type { MessageEntry } from "@/lib/types";
+  import MarkdownMessage from "./MarkdownMessage.svelte";
 
   let messages: MessageEntry[] = [];
   let container: HTMLDivElement | null = null;
@@ -50,7 +51,9 @@
             <span class="meta">{formatMeta(message)}</span>
           {/if}
           <div class="bubble">
-            <p>{message.content || "No content returned."}</p>
+            <MarkdownMessage
+              content={message.content || "No content returned."}
+            />
             {#if message.step}
               <span class="step">{message.step}</span>
             {/if}
@@ -151,12 +154,6 @@
   .message.judge .bubble {
     background: rgba(244, 190, 79, 0.18);
     border-color: rgba(244, 190, 79, 0.4);
-  }
-
-  .bubble p {
-    margin: 0;
-    white-space: pre-wrap;
-    line-height: 1.5;
   }
 
   .step {

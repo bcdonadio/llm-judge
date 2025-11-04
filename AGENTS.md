@@ -233,6 +233,7 @@ Protocol-based contracts for DI:
 - Respects `RunnerControl` (pause/cancel)
 
 **Flow:**
+
 1. Load prompts from `IPromptsManager`
 2. For each model:
    - Send initial prompt → model
