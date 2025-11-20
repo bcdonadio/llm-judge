@@ -55,6 +55,20 @@ def test_configuration_manager_json_and_auto_reload(tmp_path: Path) -> None:
     assert manager.get("beta.gamma") == "x"
 
 
+def test_auto_reload_detects_file_updates(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("value: 1\n")
+
+    manager = ConfigurationManager(config_file=config_file, auto_reload=True)
+    assert manager.get("value") == 1
+
+    original_mtime = config_file.stat().st_mtime
+    config_file.write_text("value: 2\n")
+    os.utime(config_file, (original_mtime + 1, original_mtime + 1))
+
+    assert manager.get("value") == 2
+
+
 def test_configuration_manager_without_file(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = ConfigurationManager()
     assert manager.get("anything") is None

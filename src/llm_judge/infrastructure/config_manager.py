@@ -30,6 +30,7 @@ class ConfigurationManager(IConfigurationManager):
         self._auto_reload = auto_reload
         self._lock = threading.RLock()
         self._config: Dict[str, Any] = {}
+        self._last_mtime: Optional[float] = None
         self._loaded = False
 
         if config_file:
@@ -42,8 +43,7 @@ class ConfigurationManager(IConfigurationManager):
         Environment variables override file config if present.
         """
         with self._lock:
-            if self._auto_reload and not self._loaded:
-                self.reload()
+            self._maybe_reload_locked()
 
             # Check environment variable first (uppercase with underscores)
             env_key = key.upper().replace(".", "_")
@@ -90,8 +90,7 @@ class ConfigurationManager(IConfigurationManager):
     def get_section(self, section: str) -> Dict[str, Any]:
         """Get entire configuration section."""
         with self._lock:
-            if self._auto_reload and not self._loaded:
-                self.reload()
+            self._maybe_reload_locked()
 
             value = self.get(section, {})
             if isinstance(value, dict):
@@ -103,6 +102,7 @@ class ConfigurationManager(IConfigurationManager):
         with self._lock:
             if not self._config_file:
                 self._config = {}
+                self._last_mtime = None
                 self._loaded = True
                 return
 
@@ -126,13 +126,14 @@ class ConfigurationManager(IConfigurationManager):
 
             data_dict: Dict[str, Any] = cast(Dict[str, Any], data)
             self._config = dict(data_dict)
+            if self._config_file and self._config_file.exists():
+                self._last_mtime = self._config_file.stat().st_mtime
             self._loaded = True
 
     def get_all(self) -> Dict[str, Any]:
         """Get entire configuration as a dictionary."""
         with self._lock:
-            if self._auto_reload and not self._loaded:
-                self.reload()
+            self._maybe_reload_locked()
             return self._config.copy()
 
     def merge(self, config: Mapping[str, Any]) -> None:
@@ -162,6 +163,23 @@ class ConfigurationManager(IConfigurationManager):
         except (json.JSONDecodeError, ValueError):
             # Return as string if not valid JSON
             return value
+
+    def _maybe_reload_locked(self) -> None:
+        """Reload configuration if auto-reload is enabled and the file changed.
+
+        This helper must be called with the instance lock already held.
+        """
+        if not self._auto_reload:
+            return
+
+        if self._config_file is None:
+            if not self._loaded:
+                self.reload()
+            return
+
+        current_mtime = self._config_file.stat().st_mtime
+        if not self._loaded or self._last_mtime is None or current_mtime > self._last_mtime:
+            self.reload()
 
 
 class SingletonConfigurationManager:
