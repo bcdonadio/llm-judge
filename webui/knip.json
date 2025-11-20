@@ -3,5 +3,10 @@
   "entry": ["src/main.ts"],
   "project": ["src/**/*.{js,ts,svelte}"],
   "ignore": ["src/**/*.spec.ts", "src/**/*.test.ts"],
-  "ignoreDependencies": ["eslint-formatter-junit", "svelte-preprocess", "tslib"]
+  "ignoreDependencies": [
+    "@types/dompurify",
+    "eslint-formatter-junit",
+    "svelte-preprocess",
+    "tslib"
+  ]
 }

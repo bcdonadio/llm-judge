@@ -13,7 +13,6 @@
     deriveJudgeOptionsRendered,
     displayModelName,
     formatLimit,
-    judgeOptionKey,
     modelCheckboxValue,
     modelKey,
     parseLimit,
@@ -102,6 +101,8 @@
 
   $: selectedModels = dedupedSelected.map(resolveModelName);
 
+  let judgeSelectElement: HTMLSelectElement | undefined;
+
   $: judgeOptions = (() => {
     const seen: Record<string, boolean> = {};
     const options: ModelInfo[] = [];
@@ -119,6 +120,27 @@
     }
     return options;
   })();
+
+  // Workaround for Svelte 5 select binding issue: explicitly restore value after options change
+  $: if (judgeSelectElement && judgeOptions) {
+    // Schedule value restoration on next tick to ensure options are rendered
+    setTimeout(() => {
+      const currentValue = config.judge_model;
+      if (
+        currentValue &&
+        judgeSelectElement &&
+        judgeSelectElement.value !== currentValue
+      ) {
+        const optionExists = Array.from(judgeSelectElement.options).some(
+          (opt) => opt.value === currentValue,
+        );
+        if (optionExists) {
+          // eslint-disable-next-line svelte/infinite-reactive-loop
+          judgeSelectElement.value = currentValue;
+        }
+      }
+    }, 0);
+  }
 
   async function handleRun() {
     submitting = true;
@@ -232,9 +254,11 @@
     <div class="row">
       <label>
         <span>Judge model</span>
-        <select bind:value={config.judge_model}>
+        <select bind:value={config.judge_model} bind:this={judgeSelectElement}>
           <!-- c8 ignore start -->
-          {#each deriveJudgeOptionsRendered(judgeOptions, coerceJudgeModelId(config.judge_model)) as option, index (judgeOptionKey(option, index))}
+          <!-- Svelte 5.43+ has a binding issue with keyed each blocks in selects, so we omit the key -->
+          <!-- eslint-disable-next-line svelte/require-each-key -->
+          {#each deriveJudgeOptionsRendered(judgeOptions, coerceJudgeModelId(config.judge_model)) as option}
             <option value={option.id}>{displayModelName(option)}</option>
           {/each}
           <!-- c8 ignore end -->
