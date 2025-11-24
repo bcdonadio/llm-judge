@@ -26,7 +26,7 @@ jobs:
       typing_outcome: ${{ steps.typing.outcome }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -84,7 +84,7 @@ jobs:
       UV_PROJECT_ENVIRONMENT: .venv
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
