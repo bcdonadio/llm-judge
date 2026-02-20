@@ -19,7 +19,7 @@
   "dependencies": {
     "isomorphic-dompurify": "^2.32.0",
     "marked": "^16.4.2",
-    "svelte": "5.43.12"
+    "svelte": "5.53.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.37.0",
